@@ -39,18 +39,34 @@ external dependencies.
 ## How the warp works
 
 The rendered scroll position lags behind the real `scrollTop` by a damped
-follow. That lag is the velocity signal. It feeds a vertex shader that pulls
-every vertex toward the centre of the viewport:
+follow. That lag is the velocity signal. It feeds a vertex shader that distorts
+every tile in screen space:
 
 ```glsl
-vec2 d  = p - 0.5;
-float r2 = dot(vec2(d.x * uAspect, d.y), vec2(d.x * uAspect, d.y));
-float k  = uWarp * (0.45 + 1.60 * r2);
-p = 0.5 + d * (1.0 - k);
+vec2  d  = p - 0.5;                      // normalised, NOT aspect-inflated
+float r2 = dot(d, d);                    // 0 at centre .. 0.5 at the corners
+
+float kx   = uWarp * 0.95;               // near-uniform horizontal pull
+float ky   = uWarp * (0.55 + 0.90 * r2); // vertical pull, grows outward
+float skew = -2.10 * uWarp * d.x * d.y;  // shears tiles into parallelograms
+
+p = 0.5 + vec2(d.x * (1.0 - kx), d.y * (1.0 - ky) + skew);
 ```
 
-The constant term is a near-uniform pull; the `r2` term is what bends each tile,
-so images near the centre stay square while those at the edges shear and curve.
+Three terms, each doing one job:
+
+- **kx** is constant across the frame, so the grid shrinks toward the centre but
+  stays rectangular and still reaches the left and right edges.
+- **ky** grows with radius, which bows the rows.
+- **skew** is what tilts each tile. A pure scale toward the centre can only
+  shrink tiles, never shear them — without this term the distortion reads as a
+  zoom rather than a warp.
+
+Two things matter for keeping the grid from collapsing into a ball: the radius
+must not be aspect-inflated (`d.x * aspect` blows the corners out on a wide
+viewport), and `ky`'s radial coefficient must stay low relative to its constant
+term, or tiles get crushed vertically at the top and bottom of the frame.
+
 Tiles are drawn as 14x14 subdivided quads so the bend stays smooth.
 
 Warp magnitude uses the absolute velocity, so scrolling up and down distort

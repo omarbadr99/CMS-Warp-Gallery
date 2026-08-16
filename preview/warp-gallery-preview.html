@@ -1073,19 +1073,26 @@ const VERT = `#version 300 es
 in vec2 aPos;
 uniform vec4  uRect;    // x, y, w, h in CSS px
 uniform vec2  uRes;     // canvas size in CSS px
-uniform float uWarp;    // 0 .. ~0.45
-uniform float uAspect;
+uniform float uWarp;    // 0 .. ~0.32
 out vec2 vUv;
 void main() {
   vUv = aPos;
   vec2 px = uRect.xy + aPos * uRect.zw;
   vec2 p  = px / uRes;
   vec2 d  = p - 0.5;
-  vec2 da = vec2(d.x * uAspect, d.y);
-  float r2 = dot(da, da);
-  // near-uniform pull toward centre + a quadratic term that bends each tile
-  float k = uWarp * (0.45 + 1.60 * r2);
-  p = 0.5 + d * (1.0 - k);
+  // Radius in normalised screen space, NOT aspect-inflated: an aspect-scaled r
+  // blows the corners out and balls the whole grid up on a wide viewport.
+  float r2 = dot(d, d);              // 0 at centre .. 0.5 at the corners
+  // Split the pull. Horizontally it is near-uniform, so the grid stays
+  // rectangular and still reaches the left and right edges. Vertically it
+  // grows outward, which is what bows the rows and shears each tile.
+  float kx = uWarp * 0.95;
+  float ky = uWarp * (0.55 + 0.90 * r2);
+  // Skew: a vertical offset that varies across x and grows with distance from
+  // the centre row. This is what shears each tile into a parallelogram — a
+  // pure scale toward the centre can only shrink tiles, never tilt them.
+  float skew = -2.10 * uWarp * d.x * d.y;
+  p = 0.5 + vec2(d.x * (1.0 - kx), d.y * (1.0 - ky) + skew);
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
 
@@ -1135,17 +1142,20 @@ attribute vec2 aPos;
 uniform vec4  uRect;
 uniform vec2  uRes;
 uniform float uWarp;
-uniform float uAspect;
 varying vec2 vUv;
 void main() {
   vUv = aPos;
   vec2 px = uRect.xy + aPos * uRect.zw;
   vec2 p  = px / uRes;
   vec2 d  = p - 0.5;
-  vec2 da = vec2(d.x * uAspect, d.y);
-  float r2 = dot(da, da);
-  float k = uWarp * (0.45 + 1.60 * r2);
-  p = 0.5 + d * (1.0 - k);
+  float r2 = dot(d, d);
+  float kx = uWarp * 0.95;
+  float ky = uWarp * (0.55 + 0.90 * r2);
+  // Skew: a vertical offset that varies across x and grows with distance from
+  // the centre row. This is what shears each tile into a parallelogram — a
+  // pure scale toward the centre can only shrink tiles, never tilt them.
+  float skew = -2.10 * uWarp * d.x * d.y;
+  p = 0.5 + vec2(d.x * (1.0 - kx), d.y * (1.0 - ky) + skew);
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
 
@@ -1175,7 +1185,7 @@ function initGL() {
   if (!prog) { stage.dataset.nogl = "1"; return false; }
 
   gl.useProgram(prog);
-  ["uRect", "uRes", "uWarp", "uAspect", "uTex", "uGray"].forEach(n => {
+  ["uRect", "uRes", "uWarp", "uTex", "uGray"].forEach(n => {
     uni[n] = gl.getUniformLocation(prog, n);
   });
   gl.uniform1i(uni.uTex, 0);
@@ -1377,11 +1387,11 @@ function frame(now) {
 
   /* velocity → warp, saturating so fast flicks don't blow out.
      Attack is quicker than release: the distortion snaps in, then eases off. */
-  const raw = cfg.warp ? (1 - Math.exp(-Math.abs(vel) / 70)) * cfg.warpAmount * 0.42 : 0;
+  const raw = cfg.warp ? (1 - Math.exp(-Math.abs(vel) / 70)) * cfg.warpAmount * 0.36 : 0;
   warp += (raw - warp) * Math.min(1, step * (raw > warp ? 0.38 : 0.13));
   if (warp < 0.0004) warp = 0;
 
-  meterFill.style.width = Math.min(100, (warp / 0.42) * 100).toFixed(1) + "%";
+  meterFill.style.width = Math.min(100, (warp / 0.36) * 100).toFixed(1) + "%";
   meterNum.textContent = warp.toFixed(3);
 
   /* --- hover --- */
@@ -1407,7 +1417,6 @@ function frame(now) {
   if (isGL2 && vao) gl.bindVertexArray(vao);
   gl.uniform2f(uni.uRes, stageW, stageH);
   gl.uniform1f(uni.uWarp, warp);
-  gl.uniform1f(uni.uAspect, stageW / stageH);
   gl.activeTexture(gl.TEXTURE0);
 
   const bg = baseGray(), hg = hoverGray();
