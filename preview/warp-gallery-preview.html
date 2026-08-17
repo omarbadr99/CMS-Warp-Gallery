@@ -632,6 +632,7 @@ const PRESET = () => ({
   gapX:      14,
   gapY:      64,
   padding:   56,          // leaves room for a title above the first row
+  scale:     1.9,         // image size, in column widths
 
   font:      "mono",          // mono | sans | serif
   color:     "#8a8f97",
@@ -643,7 +644,7 @@ const PRESET = () => ({
 
   warp:      !reduceMotion,   // off when the system asks for reduced motion
   scrollSpeed: 0.11,          // smoothing — lower trails further, warps harder
-  warpAmount:  1.0,           // multiplier on the distortion
+  warpAmount:  1.3,           // multiplier on the distortion
 
   rows: [
     { pattern: "*0**0*", link: "/work/slow-horizon" },
@@ -1039,9 +1040,13 @@ function computeLayout(stageW) {
   cfg.rows.forEach((row, r) => {
     const slots = slotsOf(row, cols);
     let rowH = 0;
-    slots.forEach((col) => {
+    slots.forEach((col, i) => {
       const img = IMAGES[index % IMAGES.length];
-      const w = colW;
+      // An image may grow past its own column into the empty cells beside it,
+      // but never into the next image — so it can never overlap a neighbour.
+      const nextCol = (i + 1 < slots.length) ? slots[i + 1] : cols;
+      const room = (nextCol - col) * (colW + cfg.gapX) - cfg.gapX;
+      const w = Math.min(colW * cfg.scale, room);
       const h = w / img.aspect;
       cells.push({
         x: cfg.padding + col * (colW + cfg.gapX),
@@ -1089,12 +1094,15 @@ void main() {
 
   // Horizontal: the receding middle is farther from the eye, so it draws
   // narrower. Full width is kept at the top and bottom. This is the pinch.
-  float sx = 1.0 - uWarp * c;
+  float sx = max(1.0 - uWarp * 0.62 * c, 0.40);
 
   // Vertical: near the top and bottom the surface turns edge-on to the eye,
   // so rows foreshorten hard and squash into slivers as they reach the edge.
-  float e  = 1.0 + uWarp * 3.2;
-  float uv = sign(u) * (1.0 - pow(1.0 - abs(u), e));
+  // u/(1+k*u^2) has slope exactly 1 at mid-height, so the middle band is never
+  // stretched — it only ever bends. k is capped below 1 to keep the mapping
+  // monotonic; at k=1 the edge derivative hits zero and rows would fold.
+  float kv = min(uWarp * 2.4, 0.88);
+  float uv = u / (1.0 + kv * u * u);
 
   p = 0.5 + vec2(d.x * sx, uv * 0.5);
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
@@ -1154,9 +1162,9 @@ void main() {
   vec2 d  = p - 0.5;
   float u = clamp(2.0 * d.y, -1.0, 1.0);
   float c = 1.0 - u * u;
-  float sx = 1.0 - uWarp * c;
-  float e  = 1.0 + uWarp * 3.2;
-  float uv = sign(u) * (1.0 - pow(1.0 - abs(u), e));
+  float sx = max(1.0 - uWarp * 0.62 * c, 0.40);
+  float kv = min(uWarp * 2.4, 0.88);
+  float uv = u / (1.0 + kv * u * u);
   p = 0.5 + vec2(d.x * sx, uv * 0.5);
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
@@ -1389,11 +1397,13 @@ function frame(now) {
 
   /* velocity → warp, saturating so fast flicks don't blow out.
      Attack is quicker than release: the distortion snaps in, then eases off. */
-  const raw = cfg.warp ? (1 - Math.exp(-Math.abs(vel) / 70)) * cfg.warpAmount * 0.42 : 0;
+  const raw = cfg.warp
+    ? Math.min((1 - Math.exp(-Math.abs(vel) / 70)) * cfg.warpAmount * 0.34, 0.48)
+    : 0;
   warp += (raw - warp) * Math.min(1, step * (raw > warp ? 0.38 : 0.13));
   if (warp < 0.0004) warp = 0;
 
-  meterFill.style.width = Math.min(100, (warp / 0.42) * 100).toFixed(1) + "%";
+  meterFill.style.width = Math.min(100, (warp / 0.48) * 100).toFixed(1) + "%";
   meterNum.textContent = warp.toFixed(3);
 
   /* --- hover --- */
@@ -1446,6 +1456,7 @@ function frame(now) {
    ============================================================ */
 
 const rail = document.getElementById("rail");
+let sizeNote = () => {};
 
 function el(tag, cls, txt) {
   const n = document.createElement(tag);
@@ -1621,8 +1632,20 @@ function rebuildRail() {
       rebuildRail(); apply();
     })));
     b.appendChild(ctlRow("Gap X", rangeCtl("gapX", 0, 80, 1, v => v + "px", apply)));
-    b.appendChild(ctlRow("Gap Y", rangeCtl("gapY", 0, 200, 1, v => v + "px", apply)));
+    b.appendChild(ctlRow("Gap Y", rangeCtl("gapY", 0, 320, 1, v => v + "px", apply)));
     b.appendChild(ctlRow("Padding", rangeCtl("padding", 0, 120, 1, v => v + "px", apply)));
+    b.appendChild(ctlRow("Image size", rangeCtl("scale", 1, 4, 0.05, v => v.toFixed(2) + "x", () => {
+      apply(); sizeNote();
+    })));
+    const note = el("p", "hint");
+    b.appendChild(note);
+    sizeNote = () => {
+      const c = layout.cells[0];
+      const px = c ? Math.round(c.w) + " x " + Math.round(c.h) + "px" : "-";
+      note.textContent = "Images grow into the empty cells next to them, so bigger sizes "
+        + "need sparser patterns. Largest right now: " + px + ".";
+    };
+    sizeNote();
   }));
 
   rail.appendChild(group("Text style", (b) => {
@@ -1671,7 +1694,7 @@ function rebuildRail() {
   rail.appendChild(group("Warp effect", (b) => {
     b.appendChild(ctlRow("Warp", switchCtl("warp")));
     b.appendChild(ctlRow("Scroll speed", rangeCtl("scrollSpeed", 0.03, 0.4, 0.005, v => v.toFixed(3))));
-    b.appendChild(ctlRow("Intensity", rangeCtl("warpAmount", 0, 2, 0.05, v => v.toFixed(2))));
+    b.appendChild(ctlRow("Intensity", rangeCtl("warpAmount", 0, 3, 0.05, v => v.toFixed(2) + "x")));
     b.appendChild(el("p", "hint", reduceMotion
       ? "Off by default — your system asks for reduced motion. Turn it on above to preview the effect."
       : "Lower scroll speed trails further behind the cursor, so the distortion runs deeper."));
@@ -1694,6 +1717,7 @@ function apply() {
   buildLabels();
   hovered = -1;
   syncSrLinks();
+  sizeNote();
 }
 
 function syncSrLinks() {
