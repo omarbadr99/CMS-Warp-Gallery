@@ -1097,11 +1097,13 @@ void main() {
   float sx = max(1.0 - uWarp * 0.62 * c, 0.40);
 
   // Vertical: near the top and bottom the surface turns edge-on to the eye,
-  // so rows foreshorten hard and squash into slivers as they reach the edge.
-  // u/(1+k*u^2) has slope exactly 1 at mid-height, so the middle band is never
-  // stretched — it only ever bends. k is capped below 1 to keep the mapping
-  // monotonic; at k=1 the edge derivative hits zero and rows would fold.
-  float kv = min(uWarp * 2.4, 0.88);
+  // so rows foreshorten as they reach the edge. u/(1+k*u^2) has slope exactly 1
+  // at mid-height, so the middle band is never stretched — it only ever bends.
+  // Edge slope is (1-k)/(1+k)^2, so k sets how hard the top and bottom squash:
+  // k=0.40 is about 3x, which curves clearly while keeping those rows readable.
+  // (k=0.88 is 29x — that crushes them to slivers. k must stay under 1 or the
+  // edge derivative goes negative and rows fold back on themselves.)
+  float kv = min(uWarp * 1.0, 0.40);
   float uv = u / (1.0 + kv * u * u);
 
   p = 0.5 + vec2(d.x * sx, uv * 0.5);
@@ -1163,7 +1165,7 @@ void main() {
   float u = clamp(2.0 * d.y, -1.0, 1.0);
   float c = 1.0 - u * u;
   float sx = max(1.0 - uWarp * 0.62 * c, 0.40);
-  float kv = min(uWarp * 2.4, 0.88);
+  float kv = min(uWarp * 1.0, 0.40);
   float uv = u / (1.0 + kv * u * u);
   p = 0.5 + vec2(d.x * sx, uv * 0.5);
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);

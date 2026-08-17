@@ -53,7 +53,7 @@ float c = 1.0 - u * u;                   //  1 at mid-height .. 0 at the edges
 
 float sx = max(1.0 - uWarp * 0.62 * c, 0.40);   // horizontal pinch at mid-height
 
-float kv = min(uWarp * 2.4, 0.88);              // vertical foreshortening
+float kv = min(uWarp * 1.0, 0.40);              // vertical foreshortening
 float uv = u / (1.0 + kv * u * u);
 
 p = 0.5 + vec2(d.x * sx, uv * 0.5);
@@ -70,9 +70,11 @@ Two signatures come out of this, and both are visible in the reference:
 exactly 1, so the middle band is never stretched vertically — it only bends. An
 earlier `1 - pow(1 - |u|, e)` curve had slope `e` at the centre, which stretched
 the middle by up to 1.9x while the pinch narrowed it, and the result read as
-smearing rather than curving. `k` is capped below 1 because the edge derivative
-`(1 - k)/(1 + k)^2` reaches zero at `k = 1`, where rows would fold back on
-themselves.
+smearing rather than curving. `k` sets how hard the top and bottom rows squash: the edge slope is
+`(1 - k)/(1 + k)^2`, so `k = 0.40` is about a 3x squash, which reads clearly as
+a curve while keeping those rows legible. `k = 0.88` is 29x, which crushes them
+to flat slivers. `k` must also stay below 1, where the edge derivative reaches
+zero and rows fold back on themselves.
 
 Both terms are **even in x**. That is deliberate: any term odd in x (a
 `d.x * d.y` skew, for instance) makes the whole grid read as tilting to one
