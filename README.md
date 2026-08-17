@@ -39,39 +39,42 @@ external dependencies.
 ## How the warp works
 
 The rendered scroll position lags behind the real `scrollTop` by a damped
-follow. That lag is the velocity signal. It feeds a vertex shader that distorts
-every tile in screen space:
+follow. That lag is the velocity signal, and it drives a single uniform in the
+vertex shader.
+
+The page behaves as if it were wrapped around a **horizontal cylinder seen from
+the inside**. The middle band of the viewport is the far side of that cylinder
+and recedes; the top and bottom edges are the near side and come forward:
 
 ```glsl
-vec2  d  = p - 0.5;                      // normalised, NOT aspect-inflated
-float r2 = dot(d, d);                    // 0 at centre .. 0.5 at the corners
+float u = clamp(2.0 * d.y, -1.0, 1.0);   // -1 top .. 0 middle .. +1 bottom
+float c = 1.0 - u * u;                   //  1 at mid-height .. 0 at the edges
 
-float kx   = uWarp * 0.95;               // near-uniform horizontal pull
-float ky   = uWarp * (0.55 + 0.90 * r2); // vertical pull, grows outward
-float skew = -2.10 * uWarp * d.x * d.y;  // shears tiles into parallelograms
+float sx = 1.0 - uWarp * c;              // horizontal pinch at mid-height
 
-p = 0.5 + vec2(d.x * (1.0 - kx), d.y * (1.0 - ky) + skew);
+float e  = 1.0 + uWarp * 3.2;            // vertical foreshortening at the edges
+float uv = sign(u) * (1.0 - pow(1.0 - abs(u), e));
+
+p = 0.5 + vec2(d.x * sx, uv * 0.5);
 ```
 
-Three terms, each doing one job:
+Two signatures come out of this, and both are visible in the reference:
 
-- **kx** is constant across the frame, so the grid shrinks toward the centre but
-  stays rectangular and still reaches the left and right edges.
-- **ky** grows with radius, which bows the rows.
-- **skew** is what tilts each tile. A pure scale toward the centre can only
-  shrink tiles, never shear them — without this term the distortion reads as a
-  zoom rather than a warp.
+- **The waist pinches.** `sx` is smallest at mid-height, so the middle of the
+  viewport draws narrower while the top and bottom keep full width.
+- **Rows squash into slivers at the top and bottom.** Near the edges the
+  surface turns edge-on to the eye, so bands foreshorten hard as they approach.
 
-Two things matter for keeping the grid from collapsing into a ball: the radius
-must not be aspect-inflated (`d.x * aspect` blows the corners out on a wide
-viewport), and `ky`'s radial coefficient must stay low relative to its constant
-term, or tiles get crushed vertically at the top and bottom of the frame.
+Both terms are **even in x**. That is deliberate: any term odd in x (a
+`d.x * d.y` skew, for instance) makes the whole grid read as tilting to one
+side rather than curving, which is the single most obvious way to get this
+effect wrong.
 
-Tiles are drawn as 14x14 subdivided quads so the bend stays smooth.
+Tiles are drawn as 14x14 subdivided quads so the curve stays smooth.
 
 Warp magnitude uses the absolute velocity, so scrolling up and down distort
-identically. Attack is faster than release: the distortion snaps in and eases
-out.
+identically. Attack is faster than release: the curve snaps in and eases back
+flat when the scroll stops.
 
 ## Accessibility
 
