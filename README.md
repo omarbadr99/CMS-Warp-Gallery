@@ -51,9 +51,9 @@ and recedes; the top and bottom edges are the near side and come forward:
 float u = clamp(2.0 * d.y, -1.0, 1.0);   // -1 top .. 0 middle .. +1 bottom
 float c = 1.0 - u * u;                   //  1 at mid-height .. 0 at the edges
 
-float sx = max(1.0 - uWarp * 0.62 * c, 0.40);   // horizontal pinch at mid-height
+float sx = max(1.0 - uWarp * 1.05 * c, 0.34);   // horizontal pinch at mid-height
 
-float kv = min(uWarp * 1.0, 0.40);              // vertical foreshortening
+float kv = min(uWarp * 1.15, 0.44);             // vertical foreshortening
 float uv = u / (1.0 + kv * u * u);
 
 p = 0.5 + vec2(d.x * sx, uv * 0.5);
@@ -62,7 +62,9 @@ p = 0.5 + vec2(d.x * sx, uv * 0.5);
 Two signatures come out of this, and both are visible in the reference:
 
 - **The waist pinches.** `sx` is smallest at mid-height, so the middle of the
-  viewport draws narrower while the top and bottom keep full width.
+  viewport draws narrower while the top and bottom keep full width. Its
+  coefficient is the drama dial: it sets how far the middle shrinks, and because
+  `sx` varies across a tile's own height it also sets how hard each tile curves.
 - **Rows squash into slivers at the top and bottom.** Near the edges the
   surface turns edge-on to the eye, so bands foreshorten hard as they approach.
 
@@ -101,3 +103,20 @@ flat when the scroll stops.
   keyboard and screen reader.
 - The scroll container is focusable and scrolls with the keyboard.
 - Warp defaults to off when the system requests reduced motion.
+
+## Tuning the curve
+
+Three numbers shape it, and they are independent:
+
+| Constant | Controls | Raise it to |
+|---|---|---|
+| `sx` coefficient (1.05) | how far the middle shrinks | make it more dramatic |
+| `kv` cap (0.44) | how hard the top and bottom rows squash | deepen the arc at the edges |
+| `warpAmount` base (0.37) | overall response to scroll velocity | make a given flick warp harder |
+
+`kv` is the one to be careful with — its edge slope is `(1 - k)/(1 + k)^2`, so it
+turns non-linear fast: 0.40 is a 3x squash, 0.88 is 29x, and past 1.0 rows fold.
+
+Image size interacts with all of this. A tile spanning most of the viewport
+height experiences the whole curve and reads as an hourglass; a tile spanning a
+third of it gets a slice of the curve and reads as a clean lean.

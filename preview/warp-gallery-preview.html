@@ -1094,7 +1094,7 @@ void main() {
 
   // Horizontal: the receding middle is farther from the eye, so it draws
   // narrower. Full width is kept at the top and bottom. This is the pinch.
-  float sx = max(1.0 - uWarp * 0.62 * c, 0.40);
+  float sx = max(1.0 - uWarp * 1.05 * c, 0.34);
 
   // Vertical: near the top and bottom the surface turns edge-on to the eye,
   // so rows foreshorten as they reach the edge. u/(1+k*u^2) has slope exactly 1
@@ -1103,7 +1103,7 @@ void main() {
   // k=0.40 is about 3x, which curves clearly while keeping those rows readable.
   // (k=0.88 is 29x — that crushes them to slivers. k must stay under 1 or the
   // edge derivative goes negative and rows fold back on themselves.)
-  float kv = min(uWarp * 1.0, 0.40);
+  float kv = min(uWarp * 1.15, 0.44);
   float uv = u / (1.0 + kv * u * u);
 
   p = 0.5 + vec2(d.x * sx, uv * 0.5);
@@ -1164,8 +1164,8 @@ void main() {
   vec2 d  = p - 0.5;
   float u = clamp(2.0 * d.y, -1.0, 1.0);
   float c = 1.0 - u * u;
-  float sx = max(1.0 - uWarp * 0.62 * c, 0.40);
-  float kv = min(uWarp * 1.0, 0.40);
+  float sx = max(1.0 - uWarp * 1.05 * c, 0.34);
+  float kv = min(uWarp * 1.15, 0.44);
   float uv = u / (1.0 + kv * u * u);
   p = 0.5 + vec2(d.x * sx, uv * 0.5);
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
@@ -1400,12 +1400,12 @@ function frame(now) {
   /* velocity → warp, saturating so fast flicks don't blow out.
      Attack is quicker than release: the distortion snaps in, then eases off. */
   const raw = cfg.warp
-    ? Math.min((1 - Math.exp(-Math.abs(vel) / 70)) * cfg.warpAmount * 0.34, 0.48)
+    ? Math.min((1 - Math.exp(-Math.abs(vel) / 70)) * cfg.warpAmount * 0.37, 0.50)
     : 0;
   warp += (raw - warp) * Math.min(1, step * (raw > warp ? 0.38 : 0.13));
   if (warp < 0.0004) warp = 0;
 
-  meterFill.style.width = Math.min(100, (warp / 0.48) * 100).toFixed(1) + "%";
+  meterFill.style.width = Math.min(100, (warp / 0.50) * 100).toFixed(1) + "%";
   meterNum.textContent = warp.toFixed(3);
 
   /* --- hover --- */
