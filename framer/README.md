@@ -28,8 +28,8 @@ Extra images are ignored; extra `0`s are skipped.
 
 ## Layout notes
 
-- Give the component a **full-width** frame. Height is content-driven, so leave
-  it on **auto** — do not set a fixed height.
+- Give the component a **full-width** frame and set height to **Fit Content**.
+  The component reports its own height, so Framer measures it correctly.
 - The canvas sticks to the viewport while the section scrolls past it, so the
   gallery needs to be taller than one screen for the warp to have room. Bigger
   **Image size** and **Gap Y** both add height.
@@ -50,5 +50,22 @@ Framer code components cannot query a Collection directly. Two options:
 
 ## Canvas vs preview
 
-The warp is disabled on the Framer canvas so the editor stays responsive. Open
-**Preview** to see the effect.
+On the Framer canvas the gallery draws as plain images at the correct size, so
+the layout is accurate and the editor stays responsive. The WebGL warp only runs
+in **Preview** and on the published site.
+
+## Troubleshooting
+
+**It collapses to nothing on Fit Content.** Update to the current version of the
+file. An earlier build set its height from inside the WebGL effect, which runs
+after Framer has already measured, so Framer saw a height of zero. The component
+now computes its height in React and renders it, so it is correct on the first
+paint.
+
+**The warp does not run.** Check you are in Preview, not on the canvas, and that
+**Warp** is on. The section also needs to be taller than one screen for the
+effect to have any scroll to work with — raise **Image size** or **Gap Y**.
+
+**Images do not appear.** They are drawn through WebGL, which needs the images to
+be readable cross-origin. Images uploaded to Framer are fine; images hot-linked
+from a third-party host may not be.
