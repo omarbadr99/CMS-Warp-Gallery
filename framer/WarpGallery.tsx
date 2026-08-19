@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 export default function WarpGallery(props) {
     const {
         rows = [],
+        scrollMode = "page",
         columns = 6,
         gapX = 14,
         gapY = 64,
@@ -42,6 +43,7 @@ export default function WarpGallery(props) {
 
     const wrapRef = useRef<HTMLDivElement>(null)
     const stickyRef = useRef<HTMLDivElement>(null)
+    const scrollerRef = useRef<HTMLDivElement>(null)
     const canvasRef = useRef<HTMLCanvasElement>(null)
     const labelsRef = useRef<HTMLDivElement>(null)
     const labelEls = useRef<(HTMLElement | null)[]>([])
@@ -396,7 +398,8 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             dt = Math.min(dt, 1 / 20)
             const step = Math.min(1, dt * 60)
 
-            const targetScroll = window.scrollY
+            const scroller = scrollerRef.current
+            const targetScroll = scroller ? scroller.scrollTop : window.scrollY
             const damp = 1 - Math.pow(1 - L.scrollSpeed, step)
             renderScroll += (targetScroll - renderScroll) * damp
             if (Math.abs(targetScroll - renderScroll) < 0.05)
@@ -413,12 +416,21 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             warp += (raw - warp) * Math.min(1, step * (raw > warp ? 0.38 : 0.13))
             if (warp < 0.0004) warp = 0
 
-            const lag = targetScroll - renderScroll
-            const sizer = sticky.parentElement || wrap
-            const wrapTop =
-                sizer.getBoundingClientRect().top -
-                sticky.getBoundingClientRect().top
-            const offset = wrapTop + lag
+            /* Where the content sits relative to the canvas.
+               Inside mode: the canvas is the viewport, so the content simply
+               slides by the smoothed scroll position.
+               Page mode: the canvas is stuck to the viewport while the section
+               passes, so track the section's top and add the lag. */
+            let offset: number
+            if (scroller) {
+                offset = -renderScroll
+            } else {
+                const sizer = sticky.parentElement || wrap
+                offset =
+                    sizer.getBoundingClientRect().top -
+                    sticky.getBoundingClientRect().top +
+                    (targetScroll - renderScroll)
+            }
 
             if (labelsEl)
                 labelsEl.style.transform = `translate3d(0, ${offset}px, 0)`
@@ -499,7 +511,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             if (vao) gl.deleteVertexArray(vao)
             gl.deleteProgram(prog)
         }
-    }, [isCanvas])
+    }, [isCanvas, scrollMode])
 
     /* ---------------------------------------------------------------
        5. Render
@@ -509,6 +521,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
     labelEls.current.length = layout.cells.length
 
     const contentH = empty ? 320 : layout.height
+    const inside = scrollMode === "inside"
 
     /* The root deliberately has NO height of its own. Framer's Fit Content
        measures in-flow content, so the height must come from a real in-flow
@@ -525,6 +538,19 @@ void main(){ vec4 c = texture2D(uTex, vUv);
         position: "relative",
         width: "100%",
         height: contentH,
+    }
+
+    /* Inside mode: the section is one box that Framer sizes (Viewport, Fixed or
+       Fill) and the gallery scrolls within it. Framer's own height comes
+       through `style`; fall back to a viewport if it did not set one. */
+    const insideWrapStyle: any = {
+        ...style,
+        position: "relative",
+        width: "100%",
+        height: (style as any)?.height ?? "100vh",
+        minHeight: 200,
+        background,
+        overflow: "hidden",
     }
 
     if (empty) {
@@ -556,8 +582,8 @@ void main(){ vec4 c = texture2D(uTex, vUv);
     /* On the Framer canvas draw plain images: correct height, no WebGL cost. */
     if (isCanvas) {
         return (
-            <div ref={wrapRef} style={wrapStyle}>
-              <div style={sizerStyle}>
+            <div ref={wrapRef} style={inside ? insideWrapStyle : wrapStyle}>
+              <div style={inside ? { position: "relative", width: "100%" } : sizerStyle}>
                 {layout.cells.map((c, i) => (
                     <img
                         key={i}
@@ -580,17 +606,30 @@ void main(){ vec4 c = texture2D(uTex, vUv);
     }
 
     return (
-        <div ref={wrapRef} style={wrapStyle}>
-          <div style={sizerStyle}>
+        <div
+            ref={wrapRef}
+            style={inside ? insideWrapStyle : wrapStyle}
+        >
+          <div style={inside ? { position: "absolute", inset: 0 } : sizerStyle}>
             <div
                 ref={stickyRef}
-                style={{
-                    position: "sticky",
-                    top: 0,
-                    width: "100%",
-                    height: `min(100vh, ${layout.height}px)`,
-                    overflow: "hidden",
-                }}
+                style={
+                    inside
+                        ? {
+                              position: "absolute",
+                              inset: 0,
+                              width: "100%",
+                              height: "100%",
+                              overflow: "hidden",
+                          }
+                        : {
+                              position: "sticky",
+                              top: 0,
+                              width: "100%",
+                              height: `min(100vh, ${contentH}px)`,
+                              overflow: "hidden",
+                          }
+                }
             >
                 <canvas
                     ref={canvasRef}
@@ -648,6 +687,23 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                             </div>
                         ))}
                 </div>
+                {inside && (
+                    <div
+                        ref={scrollerRef}
+                        tabIndex={0}
+                        aria-label="Gallery, scrollable"
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            overflowY: "auto",
+                            overflowX: "hidden",
+                            zIndex: 3,
+                            overscrollBehavior: "contain",
+                        }}
+                    >
+                        <div style={{ height: contentH }} />
+                    </div>
+                )}
             </div>
           </div>
         </div>
@@ -696,6 +752,16 @@ addPropertyControls(WarpGallery, {
                 },
             },
         },
+    },
+
+    scrollMode: {
+        type: ControlType.Enum,
+        title: "Scroll",
+        options: ["page", "inside"],
+        optionTitles: ["With page", "Inside section"],
+        defaultValue: "page",
+        description:
+            "With page: the section is as tall as the gallery and warps as the page scrolls past — set height to Fit Content. Inside section: the gallery scrolls within a fixed box — set height to Viewport, Fixed or Fill.",
     },
 
     columns: {

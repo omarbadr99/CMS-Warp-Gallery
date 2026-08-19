@@ -26,10 +26,24 @@ Select the component and use the right-hand properties panel.
 The pattern's filled-cell count should match the number of images in the row.
 Extra images are ignored; extra `0`s are skipped.
 
+## Scroll mode
+
+The **Scroll** property picks how the gallery occupies the page, and it decides
+which height setting to use.
+
+| Scroll | Height | Behaviour |
+|---|---|---|
+| **With page** | Fit Content | The section is as tall as the whole gallery and warps as the page scrolls past it. Default. |
+| **Inside section** | Viewport, Fixed or Fill | The section is one box and the gallery scrolls within it, page unaffected. |
+
+Use **Inside section** when you want the gallery to be exactly one screen tall.
+The two settings have to agree: "With page" on a Viewport height squeezes the
+whole gallery into one screen of scrolling, and "Inside section" on Fit Content
+falls back to a viewport-tall box.
+
 ## Layout notes
 
-- Give the component a **full-width** frame. Height can be **Fit Content** (the
-  component reports its own height) or **Fixed** if you want to control it.
+- Give the component a **full-width** frame.
 - The canvas sticks to the viewport while the section scrolls past it, so the
   gallery needs to be taller than one screen for the warp to have room. Bigger
   **Image size** and **Gap Y** both add height.
