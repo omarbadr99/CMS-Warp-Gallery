@@ -28,8 +28,8 @@ Extra images are ignored; extra `0`s are skipped.
 
 ## Layout notes
 
-- Give the component a **full-width** frame and set height to **Fit Content**.
-  The component reports its own height, so Framer measures it correctly.
+- Give the component a **full-width** frame. Height can be **Fit Content** (the
+  component reports its own height) or **Fixed** if you want to control it.
 - The canvas sticks to the viewport while the section scrolls past it, so the
   gallery needs to be taller than one screen for the warp to have room. Bigger
   **Image size** and **Gap Y** both add height.
@@ -56,11 +56,13 @@ in **Preview** and on the published site.
 
 ## Troubleshooting
 
-**It collapses to nothing on Fit Content.** Update to the current version of the
-file. An earlier build set its height from inside the WebGL effect, which runs
-after Framer has already measured, so Framer saw a height of zero. The component
-now computes its height in React and renders it, so it is correct on the first
-paint.
+**It collapses on Fit Content, or the height field is greyed out.** Update to the
+current version of the file. Two earlier bugs caused this. The first build set
+its height from inside the WebGL effect, which runs after Framer has measured.
+The second still declared an explicit height on the root while every drawn
+element was absolutely positioned — Framer's Fit Content measures *in-flow*
+content, so it read zero. The height is now carried by a real in-flow spacer,
+and the layout mode is no longer locked to auto, so you can pick Fixed instead.
 
 **The warp does not run.** Check you are in Preview, not on the canvas, and that
 **Warp** is on. The section also needs to be taller than one screen for the

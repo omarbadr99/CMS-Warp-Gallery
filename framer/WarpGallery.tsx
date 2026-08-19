@@ -9,13 +9,15 @@ import { useEffect, useMemo, useRef, useState } from "react"
  * inside: the middle band of the viewport recedes and pinches narrower, the
  * top and bottom edges come forward at full width.
  *
- * Height is computed in React and rendered declaratively, so Framer's
- * "Fit Content" measures a real height on the very first paint.
+ * The gallery's height is carried by a real in-flow spacer, not by an explicit
+ * height on the root. Framer's Fit Content measures in-flow content, and every
+ * drawn element here is absolutely positioned, so without the spacer it would
+ * measure zero and collapse.
  *
  * @framerSupportedLayoutWidth any
- * @framerSupportedLayoutHeight auto
+ * @framerSupportedLayoutHeight any-prefer-fixed
  * @framerIntrinsicWidth 1200
- * @framerIntrinsicHeight 900
+ * @framerIntrinsicHeight 1400
  * @framerDisableUnlink
  */
 export default function WarpGallery(props) {
@@ -412,8 +414,9 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             if (warp < 0.0004) warp = 0
 
             const lag = targetScroll - renderScroll
+            const sizer = sticky.parentElement || wrap
             const wrapTop =
-                wrap.getBoundingClientRect().top -
+                sizer.getBoundingClientRect().top -
                 sticky.getBoundingClientRect().top
             const offset = wrapTop + lag
 
@@ -505,18 +508,29 @@ void main(){ vec4 c = texture2D(uTex, vUv);
     const showTitles = hover === "title"
     labelEls.current.length = layout.cells.length
 
+    const contentH = empty ? 320 : layout.height
+
+    /* The root deliberately has NO height of its own. Framer's Fit Content
+       measures in-flow content, so the height must come from a real in-flow
+       box — `sizer` below. If the user picks a fixed height instead, Framer's
+       own `style` carries it and this stays out of the way. */
     const wrapStyle: any = {
         ...style,
         position: "relative",
         width: "100%",
-        height: empty ? 320 : layout.height,
         background,
-        overflow: "visible",
+    }
+
+    const sizerStyle: any = {
+        position: "relative",
+        width: "100%",
+        height: contentH,
     }
 
     if (empty) {
         return (
             <div ref={wrapRef} style={wrapStyle}>
+              <div style={sizerStyle}>
                 <div
                     style={{
                         position: "absolute",
@@ -534,6 +548,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                     <br />
                     Pattern: 0 places an image, * leaves the cell empty.
                 </div>
+              </div>
             </div>
         )
     }
@@ -542,6 +557,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
     if (isCanvas) {
         return (
             <div ref={wrapRef} style={wrapStyle}>
+              <div style={sizerStyle}>
                 {layout.cells.map((c, i) => (
                     <img
                         key={i}
@@ -558,12 +574,14 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                         }}
                     />
                 ))}
+              </div>
             </div>
         )
     }
 
     return (
         <div ref={wrapRef} style={wrapStyle}>
+          <div style={sizerStyle}>
             <div
                 ref={stickyRef}
                 style={{
@@ -631,6 +649,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                         ))}
                 </div>
             </div>
+          </div>
         </div>
     )
 }
