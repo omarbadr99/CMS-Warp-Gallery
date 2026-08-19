@@ -85,3 +85,30 @@ effect to have any scroll to work with — raise **Image size** or **Gap Y**.
 **Images do not appear.** They are drawn through WebGL, which needs the images to
 be readable cross-origin. Images uploaded to Framer are fine; images hot-linked
 from a third-party host may not be.
+
+## Performance
+
+The component is built to hold frame rate on a laptop in low-power mode, where
+dropped frames read as "the warp is janky" long before the effect itself is at
+fault. What it does:
+
+- **No layout reads in the render loop.** The sticky canvas's position is
+  derived arithmetically from the scroll offset. Measuring it every frame forces
+  a synchronous layout and was the largest single cost.
+- **Edge anti-aliasing in the shader, not MSAA.** Full-framebuffer MSAA cost
+  about 45% of the frame; the interiors are textured, so the only visible
+  aliasing is the tile outline. That one pixel is feathered with `fwidth`
+  instead, which looks the same and is nearly free.
+- **Adaptive render scale.** Starts at the device pixel ratio and steps down
+  when sustained frame time exceeds ~21ms, back up when it recovers. Halving
+  resolution is much less noticeable than halving the frame rate.
+- **Idles when nothing moves,** and stops entirely when the section is off
+  screen.
+
+The easing is frame-rate independent. `step` must stay `dt * 60` and must not be
+clamped to 1 — clamping makes the smoothing advance half as far per second at
+30fps as at 60, so the scroll feels sluggish exactly when frames are scarce.
+
+Measured with the CPU throttled 4x: **7.7 fps before these changes, 25.6 fps
+after** (software rendering, so treat the ratio rather than the absolute numbers
+as the result).

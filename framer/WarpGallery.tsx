@@ -104,6 +104,8 @@ export default function WarpGallery(props) {
         return () => ro.disconnect()
     }, [])
 
+    const srcKey = useMemo(() => items.map((i) => i.src).join("|"), [items])
+
     useEffect(() => {
         let alive = true
         const seen = new Set<string>()
@@ -125,7 +127,8 @@ export default function WarpGallery(props) {
         return () => {
             alive = false
         }
-    }, [items])
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [srcKey])
 
     /* ---------------------------------------------------------------
        3. Layout is a pure function of the above. Height comes straight
@@ -197,7 +200,7 @@ export default function WarpGallery(props) {
 
         const opts: WebGLContextAttributes = {
             alpha: true,
-            antialias: true,
+            antialias: false,
             depth: false,
             stencil: false,
             premultipliedAlpha: true,
@@ -232,19 +235,32 @@ uniform vec4 uRect; uniform vec2 uRes; uniform float uWarp;
 varying vec2 vUv;
 void main(){ vUv = aPos; vec2 p = (uRect.xy + aPos * uRect.zw) / uRes;${BODY} }`
 
+        /* Full-framebuffer MSAA is far too expensive for what it buys here:
+           the interiors are textured, so the only visible aliasing is the tile
+           outline. Feather that one pixel instead, for almost nothing. */
+        const derivs = isGL2 || !!gl.getExtension("OES_standard_derivatives")
+        const EDGE = derivs
+            ? `
+  vec2 dd = min(vUv, 1.0 - vUv);
+  vec2 fw = fwidth(vUv) + 1e-6;
+  float edge = min(smoothstep(0.0, fw.x, dd.x), smoothstep(0.0, fw.y, dd.y));`
+            : `
+  float edge = 1.0;`
+
         const FRAG = isGL2
             ? `#version 300 es
 precision highp float;
 in vec2 vUv; uniform sampler2D uTex; uniform float uGray; out vec4 frag;
 void main(){ vec4 c = texture(uTex, vUv);
-  float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));
-  frag = vec4(mix(c.rgb, vec3(g), uGray), c.a); }`
+  float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));${EDGE}
+  frag = vec4(mix(c.rgb, vec3(g), uGray), c.a) * edge; }`
             : `
+#extension GL_OES_standard_derivatives : enable
 precision highp float;
 varying vec2 vUv; uniform sampler2D uTex; uniform float uGray;
 void main(){ vec4 c = texture2D(uTex, vUv);
-  float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));
-  gl_FragColor = vec4(mix(c.rgb, vec3(g), uGray), c.a); }`
+  float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));${EDGE}
+  gl_FragColor = vec4(mix(c.rgb, vec3(g), uGray), c.a) * edge; }`
 
         function compile(src: string, type: number) {
             const sh = gl.createShader(type)
@@ -340,6 +356,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                 }
                 texCache.set(src, t)
                 pending.delete(src)
+                needsDraw = true
             }
             img.onerror = () => pending.delete(src)
             img.src = src
@@ -348,28 +365,61 @@ void main(){ vec4 c = texture2D(uTex, vUv);
 
         let stageW = 1
         let stageH = 1
+        let stageLeft = 0
+        let stageTopVp = 0
+        let sectionTop = 0
+        let needsDraw = true
+
+        /* Render scale adapts to the machine. A laptop in low-power mode cannot
+           fill a 2x viewport with MSAA at 60fps, and dropping to 1x is far less
+           visible than dropping half the frames. */
+        const maxScale = Math.min(window.devicePixelRatio || 1, 2)
+        let scale = maxScale
+
         function resize() {
             const r = sticky.getBoundingClientRect()
             stageW = Math.max(1, Math.round(r.width))
             stageH = Math.max(1, Math.round(r.height))
-            const dpr = Math.min(window.devicePixelRatio || 1, 2)
-            canvas.width = Math.round(stageW * dpr)
-            canvas.height = Math.round(stageH * dpr)
-            gl.viewport(0, 0, canvas.width, canvas.height)
+            stageLeft = r.left
+            stageTopVp = r.top
+            const sizerEl = sticky.parentElement || wrap
+            sectionTop = sizerEl.getBoundingClientRect().top + window.scrollY
+            const w = Math.round(stageW * scale)
+            const h = Math.round(stageH * scale)
+            if (canvas.width !== w || canvas.height !== h) {
+                canvas.width = w
+                canvas.height = h
+                gl.viewport(0, 0, w, h)
+            }
+            needsDraw = true
         }
         const ro = new ResizeObserver(resize)
         ro.observe(sticky)
         resize()
 
+        /* Nothing to do at all while the section is off screen. */
+        let onScreen = true
+        const io = new IntersectionObserver(
+            (entries) => {
+                onScreen = entries[0]?.isIntersecting ?? true
+                if (onScreen) needsDraw = true
+            },
+            { rootMargin: "200px" }
+        )
+        io.observe(sticky)
+
         let hovered = -1
         const pointer = { x: -1, y: -1, inside: false }
         const onMove = (e: PointerEvent) => {
-            const r = sticky.getBoundingClientRect()
-            pointer.x = e.clientX - r.left
-            pointer.y = e.clientY - r.top
+            pointer.x = e.clientX - stageLeft
+            pointer.y = e.clientY - stageTopVp
             pointer.inside = true
+            needsDraw = true
         }
-        const onLeave = () => (pointer.inside = false)
+        const onLeave = () => {
+            pointer.inside = false
+            needsDraw = true
+        }
         const onClick = () => {
             const cells = live.current.layout.cells
             if (hovered < 0 || !cells[hovered]?.link) return
@@ -386,6 +436,10 @@ void main(){ vec4 c = texture2D(uTex, vUv);
         let prevScroll = renderScroll
         let warp = 0
         let last = performance.now()
+        let lastOffset = NaN
+        let graysAnimating = false
+        let tick = 0
+        const frameMs: number[] = []
         const grays = new Map<number, number>()
 
         function frame(now: number) {
@@ -393,10 +447,20 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             const L = live.current
             const cells = L.layout.cells
 
+            if (!onScreen) {
+                last = now
+                return
+            }
+
             let dt = (now - last) / 1000
             last = now
             dt = Math.min(dt, 1 / 20)
-            const step = Math.min(1, dt * 60)
+            /* Steps of 60fps frames. Do NOT clamp this to 1: dt is already
+               capped above, and clamping makes the easing frame-rate dependent
+               - at 30fps the smoothing would advance half as far per second as
+               at 60, so the scroll feels sluggish exactly when frames are
+               scarce. 1 - pow(1-k, step) stays stable for any step. */
+            const step = dt * 60
 
             const scroller = scrollerRef.current
             const targetScroll = scroller ? scroller.scrollTop : window.scrollY
@@ -425,14 +489,19 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             if (scroller) {
                 offset = -renderScroll
             } else {
-                const sizer = sticky.parentElement || wrap
-                offset =
-                    sizer.getBoundingClientRect().top -
-                    sticky.getBoundingClientRect().top +
-                    (targetScroll - renderScroll)
+                /* Derive the sticky element's position arithmetically instead
+                   of measuring it. Reading a sticky element's rect forces a
+                   synchronous layout every frame, which was the single biggest
+                   cost in this loop. sectionTop is refreshed on resize and
+                   occasionally below, to survive reflows higher up the page. */
+                const stickyTop = Math.min(
+                    Math.max(targetScroll, sectionTop),
+                    sectionTop + L.layout.height - stageH
+                )
+                offset = sectionTop - stickyTop + (targetScroll - renderScroll)
             }
 
-            if (labelsEl)
+            if (labelsEl && offset !== lastOffset)
                 labelsEl.style.transform = `translate3d(0, ${offset}px, 0)`
 
             const prevHover = hovered
@@ -460,6 +529,48 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                 if (prevHover >= 0 && els[prevHover])
                     els[prevHover]!.style.opacity = "0"
                 if (hovered >= 0 && els[hovered]) els[hovered]!.style.opacity = "1"
+                needsDraw = true
+            }
+
+            /* Re-sync the cached section offset now and then; cheap at 1/30
+               the rate, and keeps us correct if the page reflows above us. */
+            if ((tick++ & 31) === 0 && !scroller) {
+                const sizerEl = sticky.parentElement || wrap
+                const st = sizerEl.getBoundingClientRect().top + window.scrollY
+                if (Math.abs(st - sectionTop) > 0.5) {
+                    sectionTop = st
+                    needsDraw = true
+                }
+            }
+
+            /* Nothing moving and nothing animating: skip the draw entirely.
+               At rest this takes the loop from a full redraw to almost free. */
+            const still =
+                warp === 0 &&
+                renderScroll === targetScroll &&
+                offset === lastOffset &&
+                !graysAnimating
+            if (still && !needsDraw) {
+                frameMs.length = 0
+                return
+            }
+            lastOffset = offset
+            needsDraw = false
+
+            /* Adapt resolution to what the machine can actually sustain. */
+            frameMs.push(dt * 1000)
+            if (frameMs.length >= 40) {
+                let sum = 0
+                for (const v of frameMs) sum += v
+                const avg = sum / frameMs.length
+                frameMs.length = 0
+                if (avg > 21 && scale > 1) {
+                    scale = Math.max(1, scale - 0.5)
+                    resize()
+                } else if (avg < 11 && scale < maxScale) {
+                    scale = Math.min(maxScale, scale + 0.5)
+                    resize()
+                }
             }
 
             gl.clearColor(0, 0, 0, 0)
@@ -473,7 +584,10 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             const bg = L.hover === "gray2color" ? 1 : 0
             const hg =
                 L.hover === "gray2color" ? 0 : L.hover === "color2gray" ? 1 : bg
-            const margin = stageH * 0.9
+            /* The warp never pulls content more than about half a viewport, so
+               there is no reason to draw nearly three viewports of tiles. */
+            const margin = stageH * 0.55
+            let anyGray = false
 
             for (let i = 0; i < cells.length; i++) {
                 const c = cells[i]
@@ -484,7 +598,9 @@ void main(){ vec4 c = texture2D(uTex, vUv);
 
                 const want = i === hovered ? hg : bg
                 const cur = grays.get(i) ?? bg
-                const next = cur + (want - cur) * Math.min(1, step * 0.16)
+                let next = cur + (want - cur) * Math.min(1, step * 0.16)
+                if (Math.abs(want - next) < 0.002) next = want
+                else anyGray = true
                 grays.set(i, next)
 
                 gl.bindTexture(gl.TEXTURE_2D, tex)
@@ -492,6 +608,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
                 gl.uniform1f(uni.uGray, next)
                 gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0)
             }
+            graysAnimating = anyGray
         }
         raf = requestAnimationFrame((t) => {
             last = t
@@ -501,6 +618,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
         return () => {
             cancelAnimationFrame(raf)
             ro.disconnect()
+            io.disconnect()
             sticky.removeEventListener("pointermove", onMove)
             sticky.removeEventListener("pointerleave", onLeave)
             sticky.removeEventListener("click", onClick)
