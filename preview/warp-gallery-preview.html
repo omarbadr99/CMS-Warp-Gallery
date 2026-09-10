@@ -643,6 +643,9 @@ const PRESET = () => ({
   hover:     "title",         // gray2color | color2gray | title | none
 
   warp:      !reduceMotion,   // off when the system asks for reduced motion
+  warpStyle: "edges",         // cylinder | edges
+  edgeBand:  0.15,            // how far in from the top/bottom the curl reaches
+  edgeRest:  0.02,            // curl that remains when the scroll stops
   scrollSpeed: 0.11,          // smoothing — lower trails further, warps harder
   warpAmount:  1.3,           // multiplier on the distortion
 
@@ -1078,35 +1081,43 @@ const VERT = `#version 300 es
 in vec2 aPos;
 uniform vec4  uRect;    // x, y, w, h in CSS px
 uniform vec2  uRes;     // canvas size in CSS px
-uniform float uWarp;    // 0 .. ~0.32
+uniform float uWarp;    // velocity-driven amount
+uniform float uStyle;   // 0 = cylinder, 1 = viewport edges
+uniform float uBand;    // edge band height, in viewport fractions
+uniform float uRest;    // curl that stays when the scroll stops
 out vec2 vUv;
 void main() {
   vUv = aPos;
   vec2 px = uRect.xy + aPos * uRect.zw;
   vec2 p  = px / uRes;
-  vec2 d  = p - 0.5;
-  // The page wraps around a horizontal cylinder seen from the inside: the
-  // middle band of the viewport is the far side and recedes, the top and
-  // bottom edges are the near side and come forward. Both terms below are
-  // even in x, so the grid can never tilt to one side.
-  float u = clamp(2.0 * d.y, -1.0, 1.0);   // -1 top .. 0 middle .. +1 bottom
-  float c = 1.0 - u * u;                   //  1 at mid-height .. 0 at the edges
+  vec2 d = p - 0.5;
 
-  // Horizontal: the receding middle is farther from the eye, so it draws
-  // narrower. Full width is kept at the top and bottom. This is the pinch.
-  float sx = max(1.0 - uWarp * 1.05 * c, 0.34);
+  if (uStyle < 0.5) {
+    /* ---- Cylinder: the whole viewport curves, middle pinched ---- */
+    float u = clamp(2.0 * d.y, -1.0, 1.0);
+    float c = 1.0 - u * u;
+    float sx = max(1.0 - uWarp * 1.05 * c, 0.34);
+    float kv = min(uWarp * 1.15, 0.44);
+    float uv = u / (1.0 + kv * u * u);
+    p = 0.5 + vec2(d.x * sx, uv * 0.5);
+  } else {
+    /* ---- Viewport edges: flat through the middle, tips at top and bottom.
+       e is 0 outside the band and rises to 1 at the very lip, so a tile stays
+       pristine until it reaches the edge of the viewport.
 
-  // Vertical: near the top and bottom the surface turns edge-on to the eye,
-  // so rows foreshorten as they reach the edge. u/(1+k*u^2) has slope exactly 1
-  // at mid-height, so the middle band is never stretched — it only ever bends.
-  // Edge slope is (1-k)/(1+k)^2, so k sets how hard the top and bottom squash:
-  // k=0.40 is about 3x, which curves clearly while keeping those rows readable.
-  // (k=0.88 is 29x — that crushes them to slivers. k must stay under 1 or the
-  // edge derivative goes negative and rows fold back on themselves.)
-  float kv = min(uWarp * 1.15, 0.44);
-  float uv = u / (1.0 + kv * u * u);
-
-  p = 0.5 + vec2(d.x * sx, uv * 0.5);
+       Measured off the reference: a tile sitting at the lip has a dead-vertical
+       edge where it crosses the middle of the screen and tapers outward toward
+       the sides, with its horizontal edges staying straight. So the main term
+       is a horizontal spread that grows into the band, plus a much smaller dip
+       that pulls the outer corners back into the viewport. ---- */
+    float band = max(uBand, 0.001);
+    float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
+    e = e * e * (3.0 - 2.0 * e);
+    float amt = uWarp + uRest;
+    p.x = 0.5 + d.x * (1.0 + amt * e * 0.18);
+    float dir = p.y < 0.5 ? 1.0 : -1.0;
+    p.y += dir * amt * e * d.x * d.x * 0.18;
+  }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
 
@@ -1156,18 +1167,42 @@ attribute vec2 aPos;
 uniform vec4  uRect;
 uniform vec2  uRes;
 uniform float uWarp;
+uniform float uStyle;
+uniform float uBand;
+uniform float uRest;
 varying vec2 vUv;
 void main() {
   vUv = aPos;
   vec2 px = uRect.xy + aPos * uRect.zw;
   vec2 p  = px / uRes;
-  vec2 d  = p - 0.5;
-  float u = clamp(2.0 * d.y, -1.0, 1.0);
-  float c = 1.0 - u * u;
-  float sx = max(1.0 - uWarp * 1.05 * c, 0.34);
-  float kv = min(uWarp * 1.15, 0.44);
-  float uv = u / (1.0 + kv * u * u);
-  p = 0.5 + vec2(d.x * sx, uv * 0.5);
+  vec2 d = p - 0.5;
+
+  if (uStyle < 0.5) {
+    /* ---- Cylinder: the whole viewport curves, middle pinched ---- */
+    float u = clamp(2.0 * d.y, -1.0, 1.0);
+    float c = 1.0 - u * u;
+    float sx = max(1.0 - uWarp * 1.05 * c, 0.34);
+    float kv = min(uWarp * 1.15, 0.44);
+    float uv = u / (1.0 + kv * u * u);
+    p = 0.5 + vec2(d.x * sx, uv * 0.5);
+  } else {
+    /* ---- Viewport edges: flat through the middle, tips at top and bottom.
+       e is 0 outside the band and rises to 1 at the very lip, so a tile stays
+       pristine until it reaches the edge of the viewport.
+
+       Measured off the reference: a tile sitting at the lip has a dead-vertical
+       edge where it crosses the middle of the screen and tapers outward toward
+       the sides, with its horizontal edges staying straight. So the main term
+       is a horizontal spread that grows into the band, plus a much smaller dip
+       that pulls the outer corners back into the viewport. ---- */
+    float band = max(uBand, 0.001);
+    float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
+    e = e * e * (3.0 - 2.0 * e);
+    float amt = uWarp + uRest;
+    p.x = 0.5 + d.x * (1.0 + amt * e * 0.18);
+    float dir = p.y < 0.5 ? 1.0 : -1.0;
+    p.y += dir * amt * e * d.x * d.x * 0.18;
+  }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
 
@@ -1197,7 +1232,7 @@ function initGL() {
   if (!prog) { stage.dataset.nogl = "1"; return false; }
 
   gl.useProgram(prog);
-  ["uRect", "uRes", "uWarp", "uTex", "uGray"].forEach(n => {
+  ["uRect", "uRes", "uWarp", "uStyle", "uBand", "uRest", "uTex", "uGray"].forEach(n => {
     uni[n] = gl.getUniformLocation(prog, n);
   });
   gl.uniform1i(uni.uTex, 0);
@@ -1431,6 +1466,9 @@ function frame(now) {
   if (isGL2 && vao) gl.bindVertexArray(vao);
   gl.uniform2f(uni.uRes, stageW, stageH);
   gl.uniform1f(uni.uWarp, warp);
+  gl.uniform1f(uni.uStyle, cfg.warpStyle === "edges" ? 1 : 0);
+  gl.uniform1f(uni.uBand, cfg.edgeBand);
+  gl.uniform1f(uni.uRest, cfg.warp ? cfg.edgeRest : 0);
   gl.activeTexture(gl.TEXTURE0);
 
   const bg = baseGray(), hg = hoverGray();
@@ -1695,6 +1733,12 @@ function rebuildRail() {
 
   rail.appendChild(group("Warp effect", (b) => {
     b.appendChild(ctlRow("Warp", switchCtl("warp")));
+    b.appendChild(ctlRow("Style", segCtl("warpStyle", [
+      { value: "cylinder", label: "Cylinder" },
+      { value: "edges",    label: "Edges" }
+    ], () => {})));
+    b.appendChild(ctlRow("Edge band", rangeCtl("edgeBand", 0.05, 0.5, 0.01, v => v.toFixed(2))));
+    b.appendChild(ctlRow("Resting curl", rangeCtl("edgeRest", 0, 0.5, 0.01, v => v.toFixed(2))));
     b.appendChild(ctlRow("Scroll speed", rangeCtl("scrollSpeed", 0.03, 0.4, 0.005, v => v.toFixed(3))));
     b.appendChild(ctlRow("Intensity", rangeCtl("warpAmount", 0, 3, 0.05, v => v.toFixed(2) + "x")));
     b.appendChild(el("p", "hint", reduceMotion
