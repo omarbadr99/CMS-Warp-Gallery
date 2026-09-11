@@ -650,8 +650,8 @@ const PRESET = () => ({
   warpStyle: "edges",         // cylinder | edges
   edgeBand:  0.15,            // how far in from the top/bottom the curl reaches
   edgeRest:  0.02,            // curl that remains when the scroll stops
-  dispersion: 0.060,          // chromatic split on the warped edges
-  edgeAngle: 0.30,            // how hard tiles taper at the lip
+  dispersion: 0.120,          // chromatic split on the warped edges
+  edgeAngle: 0.35,            // how hard tiles taper at the lip
   edgeScale: "shrink",        // shrink | grow  (at the lip)
   leadIn:    1.0,             // clear viewports before the first row
   leadOut:   1.0,             // clear viewports after the last row
@@ -1118,24 +1118,31 @@ void main() {
     float uv = u / (1.0 + kv * u * u);
     p = 0.5 + vec2(d.x * sx, uv * 0.5);
   } else {
-    /* ---- Viewport edges ----------------------------------------------
-       e is 0 outside the band and rises to 1 at the very lip, so a tile is
-       pristine through the middle of the screen and only reacts once it
-       arrives at the top or bottom.
+    /* ---- Viewport edges: the page is wrapped on a horizontal cylinder and
+       we are sitting just inside it. Through the middle band the surface is
+       flat; at each lip it rolls away from the eye.
 
-       Measured off the reference closeup: a card entering from below narrows
-       toward the lip, and it narrows about ITS OWN centre, not the screen's -
-       its left edge moved +24px right while its right edge moved -22px left.
-       So the taper is applied in tile space, which is why it reads as the tile
-       itself tipping away rather than the whole screen being lensed. ---- */
+       The part that makes it read as rolling rather than pinching is the
+       vertical term. A point's arc length along the surface grows linearly,
+       but its PROJECTION grows as sin(phi) - so spacing bunches up as the
+       surface turns edge-on. Scaling the tile alone only ever looks squashed;
+       compressing the spacing is what curves it. ---- */
     float band = max(uBand, 0.001);
-    float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
-    e = e * e * (3.0 - 2.0 * e);
-    vEdge = e * (uWarp + uRest);
-    float shrink = vEdge * uAngle * uDir;
-    vec2 t = aPos - 0.5;
-    p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
-                         (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
+    float m = min(p.y, 1.0 - p.y);
+    float amt = uWarp + uRest;
+    float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+    if (m < band && phiMax > 0.0005) {
+      float u = m / band;                    // 1 at the band edge, 0 at the lip
+      float phi = (1.0 - u) * phiMax;
+      float roll = sin(phi) / sin(phiMax);   // arc length -> what the eye sees
+      float mNew = band * (1.0 - roll);
+      float depth = 1.0 - cos(phi);          // how far it has receded
+      vEdge = amt * depth / max(1.0 - cos(phiMax), 1e-4);
+      float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+      vec2 tl = aPos - 0.5;
+      p = vec2((uRect.x + (0.5 + tl.x * sx) * uRect.z) / uRes.x,
+               (p.y < 0.5) ? mNew : 1.0 - mNew);
+    }
   }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
@@ -1148,11 +1155,30 @@ uniform sampler2D uTex;
 uniform float uGray;
 uniform float uDisp;
 out vec4 frag;
+
+/* A sample's position along the smear maps to a wavelength, so the smear
+   resolves into a continuous spectrum instead of a two-tone fringe. */
+vec3 spectrum(float t) {
+  return clamp(vec3(1.5 - abs(4.0 * t - 3.0),
+                    1.5 - abs(4.0 * t - 2.0),
+                    1.5 - abs(4.0 * t - 1.0)), 0.0, 1.0);
+}
+
 void main() {
-  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
   vec4 c = texture(uTex, vUv);
-  c.r = texture(uTex, vUv + off).r;
-  c.b = texture(uTex, vUv - off).b;
+  float amount = vEdge * uDisp;
+  if (amount > 0.0005) {
+    vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * amount;
+    vec3 sum = vec3(0.0);
+    vec3 wsum = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+      float t = float(i) / 7.0;
+      vec3 w = spectrum(t);
+      sum += texture(uTex, vUv + off * (t - 0.5) * 2.0).rgb * w;
+      wsum += w;
+    }
+    c.rgb = sum / max(wsum, vec3(1e-4));
+  }
   float g = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
   frag = vec4(mix(c.rgb, vec3(g), uGray), c.a);
 }`;
@@ -1214,24 +1240,31 @@ void main() {
     float uv = u / (1.0 + kv * u * u);
     p = 0.5 + vec2(d.x * sx, uv * 0.5);
   } else {
-    /* ---- Viewport edges ----------------------------------------------
-       e is 0 outside the band and rises to 1 at the very lip, so a tile is
-       pristine through the middle of the screen and only reacts once it
-       arrives at the top or bottom.
+    /* ---- Viewport edges: the page is wrapped on a horizontal cylinder and
+       we are sitting just inside it. Through the middle band the surface is
+       flat; at each lip it rolls away from the eye.
 
-       Measured off the reference closeup: a card entering from below narrows
-       toward the lip, and it narrows about ITS OWN centre, not the screen's -
-       its left edge moved +24px right while its right edge moved -22px left.
-       So the taper is applied in tile space, which is why it reads as the tile
-       itself tipping away rather than the whole screen being lensed. ---- */
+       The part that makes it read as rolling rather than pinching is the
+       vertical term. A point's arc length along the surface grows linearly,
+       but its PROJECTION grows as sin(phi) - so spacing bunches up as the
+       surface turns edge-on. Scaling the tile alone only ever looks squashed;
+       compressing the spacing is what curves it. ---- */
     float band = max(uBand, 0.001);
-    float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
-    e = e * e * (3.0 - 2.0 * e);
-    vEdge = e * (uWarp + uRest);
-    float shrink = vEdge * uAngle * uDir;
-    vec2 t = aPos - 0.5;
-    p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
-                         (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
+    float m = min(p.y, 1.0 - p.y);
+    float amt = uWarp + uRest;
+    float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+    if (m < band && phiMax > 0.0005) {
+      float u = m / band;                    // 1 at the band edge, 0 at the lip
+      float phi = (1.0 - u) * phiMax;
+      float roll = sin(phi) / sin(phiMax);   // arc length -> what the eye sees
+      float mNew = band * (1.0 - roll);
+      float depth = 1.0 - cos(phi);          // how far it has receded
+      vEdge = amt * depth / max(1.0 - cos(phiMax), 1e-4);
+      float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+      vec2 tl = aPos - 0.5;
+      p = vec2((uRect.x + (0.5 + tl.x * sx) * uRect.z) / uRes.x,
+               (p.y < 0.5) ? mNew : 1.0 - mNew);
+    }
   }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
@@ -1243,11 +1276,28 @@ varying float vEdge;
 uniform sampler2D uTex;
 uniform float uGray;
 uniform float uDisp;
+
+vec3 spectrum(float t) {
+  return clamp(vec3(1.5 - abs(4.0 * t - 3.0),
+                    1.5 - abs(4.0 * t - 2.0),
+                    1.5 - abs(4.0 * t - 1.0)), 0.0, 1.0);
+}
+
 void main() {
-  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
   vec4 c = texture2D(uTex, vUv);
-  c.r = texture2D(uTex, vUv + off).r;
-  c.b = texture2D(uTex, vUv - off).b;
+  float amount = vEdge * uDisp;
+  if (amount > 0.0005) {
+    vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * amount;
+    vec3 sum = vec3(0.0);
+    vec3 wsum = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+      float t = float(i) / 7.0;
+      vec3 w = spectrum(t);
+      sum += texture2D(uTex, vUv + off * (t - 0.5) * 2.0).rgb * w;
+      wsum += w;
+    }
+    c.rgb = sum / max(wsum, vec3(1e-4));
+  }
   float g = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
   gl_FragColor = vec4(mix(c.rgb, vec3(g), uGray), c.a);
 }`;
@@ -1784,7 +1834,7 @@ function rebuildRail() {
       { value: "shrink", label: "Shrink" },
       { value: "grow",   label: "Grow" }
     ], () => {})));
-    b.appendChild(ctlRow("Dispersion", rangeCtl("dispersion", 0, 0.15, 0.005, v => v.toFixed(3))));
+    b.appendChild(ctlRow("Dispersion", rangeCtl("dispersion", 0, 0.6, 0.005, v => v.toFixed(3))));
     b.appendChild(ctlRow("Scroll speed", rangeCtl("scrollSpeed", 0.03, 0.4, 0.005, v => v.toFixed(3))));
     b.appendChild(ctlRow("Intensity", rangeCtl("warpAmount", 0, 3, 0.05, v => v.toFixed(2) + "x")));
     b.appendChild(el("p", "hint", reduceMotion

@@ -83,12 +83,12 @@ export default function ViewportWarpGallery(props) {
 
         warpOn = true,
         edgeBand = 0.15,
-        edgeAngle = 0.3,
+        edgeAngle = 0.35,
         edgeScale = "shrink",
         spaceBefore = 0,
         spaceAfter = 0,
         restingCurl = 0.02,
-        dispersion = 0.06,
+        dispersion = 0.12,
         scrollSpeed = 0.11,
         intensity = 1.3,
         background = "transparent",
@@ -314,16 +314,33 @@ export default function ViewportWarpGallery(props) {
            screen's — its left edge moved +24px right while its right edge moved
            -22px left. So the taper is applied in tile space, which is why it
            reads as the tile tipping away rather than the screen being lensed. */
+        /* The page is wrapped on a horizontal cylinder and we sit just inside
+           it. Through the middle band the surface is flat; at each lip it rolls
+           away from the eye.
+
+           The vertical term is what makes it read as rolling rather than
+           pinching. A point's arc length along the surface grows linearly, but
+           its PROJECTION grows as sin(phi), so spacing bunches up as the
+           surface turns edge-on. Scaling a tile alone only ever looks squashed;
+           compressing the spacing is what curves it. */
         const BODY = `
   vec2 p = (uRect.xy + aPos * uRect.zw) / uRes;
   float band = max(uBand, 0.001);
-  float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
-  e = e * e * (3.0 - 2.0 * e);
-  vEdge = e * (uWarp + uRest);
-  float shrink = vEdge * uAngle * uDir;
-  vec2 t = aPos - 0.5;
-  p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
-                       (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
+  float m = min(p.y, 1.0 - p.y);
+  float amt = uWarp + uRest;
+  float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+  if (m < band && phiMax > 0.0005) {
+    float u = m / band;                    // 1 at the band edge, 0 at the lip
+    float phi = (1.0 - u) * phiMax;
+    float roll = sin(phi) / sin(phiMax);   // arc length -> what the eye sees
+    float mNew = band * (1.0 - roll);
+    float depth = 1.0 - cos(phi);          // how far it has receded
+    vEdge = amt * depth / max(1.0 - cos(phiMax), 1e-4);
+    float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+    vec2 tl = aPos - 0.5;
+    p = vec2((uRect.x + (0.5 + tl.x * sx) * uRect.z) / uRes.x,
+             (p.y < 0.5) ? mNew : 1.0 - mNew);
+  }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);`
 
         const VERT = isGL2
@@ -333,14 +350,14 @@ uniform vec4 uRect; uniform vec2 uRes;
 uniform float uWarp; uniform float uBand; uniform float uRest;
 uniform float uAngle; uniform float uDir;
 out vec2 vUv; out float vEdge;
-void main(){ vUv = aPos;${BODY} }`
+void main(){ vUv = aPos; vEdge = 0.0;${BODY} }`
             : `
 attribute vec2 aPos;
 uniform vec4 uRect; uniform vec2 uRes;
 uniform float uWarp; uniform float uBand; uniform float uRest;
 uniform float uAngle; uniform float uDir;
 varying vec2 vUv; varying float vEdge;
-void main(){ vUv = aPos;${BODY} }`
+void main(){ vUv = aPos; vEdge = 0.0;${BODY} }`
 
         const derivs = isGL2 || !!gl.getExtension("OES_standard_derivatives")
         const EDGE = derivs
@@ -356,11 +373,28 @@ void main(){ vUv = aPos;${BODY} }`
 precision highp float;
 in vec2 vUv; in float vEdge;
 uniform sampler2D uTex; uniform float uGray; uniform float uDisp; out vec4 frag;
+
+vec3 spectrum(float s) {
+  return clamp(vec3(1.5 - abs(4.0 * s - 3.0),
+                    1.5 - abs(4.0 * s - 2.0),
+                    1.5 - abs(4.0 * s - 1.0)), 0.0, 1.0);
+}
 void main(){
-  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
   vec4 c = texture(uTex, vUv);
-  c.r = texture(uTex, vUv + off).r;
-  c.b = texture(uTex, vUv - off).b;
+  float amount = vEdge * uDisp;
+  if (amount > 0.0005) {
+    /* each sample along the smear takes a wavelength, so it resolves into a
+       continuous spectrum rather than a two-tone fringe */
+    vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * amount;
+    vec3 sum = vec3(0.0); vec3 wsum = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+      float s = float(i) / 7.0;
+      vec3 w = spectrum(s);
+      sum += texture(uTex, vUv + off * (s - 0.5) * 2.0).rgb * w;
+      wsum += w;
+    }
+    c.rgb = sum / max(wsum, vec3(1e-4));
+  }
   float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));${EDGE}
   frag = vec4(mix(c.rgb, vec3(g), uGray), c.a) * edge; }`
             : `
@@ -368,11 +402,26 @@ void main(){
 precision highp float;
 varying vec2 vUv; varying float vEdge;
 uniform sampler2D uTex; uniform float uGray; uniform float uDisp;
+
+vec3 spectrum(float s) {
+  return clamp(vec3(1.5 - abs(4.0 * s - 3.0),
+                    1.5 - abs(4.0 * s - 2.0),
+                    1.5 - abs(4.0 * s - 1.0)), 0.0, 1.0);
+}
 void main(){
-  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
   vec4 c = texture2D(uTex, vUv);
-  c.r = texture2D(uTex, vUv + off).r;
-  c.b = texture2D(uTex, vUv - off).b;
+  float amount = vEdge * uDisp;
+  if (amount > 0.0005) {
+    vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * amount;
+    vec3 sum = vec3(0.0); vec3 wsum = vec3(0.0);
+    for (int i = 0; i < 8; i++) {
+      float s = float(i) / 7.0;
+      vec3 w = spectrum(s);
+      sum += texture2D(uTex, vUv + off * (s - 0.5) * 2.0).rgb * w;
+      wsum += w;
+    }
+    c.rgb = sum / max(wsum, vec3(1e-4));
+  }
   float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));${EDGE}
   gl_FragColor = vec4(mix(c.rgb, vec3(g), uGray), c.a) * edge; }`
 
@@ -907,9 +956,9 @@ addPropertyControls(ViewportWarpGallery, {
     edgeAngle: {
         type: ControlType.Number,
         title: "Angle",
-        min: 0, max: 1, step: 0.01, defaultValue: 0.3,
+        min: 0, max: 1, step: 0.01, defaultValue: 0.35,
         hidden: (p) => !p.warpOn,
-        description: "How hard a tile tapers once it reaches the lip.",
+        description: "How far the surface rolls at the lip. 1 is a full quarter turn.",
     },
     edgeScale: {
         type: ControlType.Enum,
@@ -937,10 +986,10 @@ addPropertyControls(ViewportWarpGallery, {
     dispersion: {
         type: ControlType.Number,
         title: "Dispersion",
-        min: 0, max: 0.15, step: 0.005, defaultValue: 0.06,
+        min: 0, max: 0.6, step: 0.005, defaultValue: 0.12,
         hidden: (p) => !p.warpOn,
         description:
-            "Chromatic split on the warped edges. Red and blue are sampled apart, strongest where the taper bites hardest.",
+            "Prismatic spread on the rolled edges. Eight samples across the smear each take a wavelength, so it resolves into a spectrum. Push past 0.3 for a heavy prism.",
     },
     intensity: {
         type: ControlType.Number,

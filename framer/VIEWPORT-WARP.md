@@ -36,45 +36,51 @@ placed:
 
 ## The warp
 
-`e` is 0 everywhere outside the edge band and rises to 1 at the very lip, so a
-tile is untouched until it reaches the top or bottom of the viewport:
+The page is wrapped on a horizontal cylinder and the viewer sits just inside it.
+Through the middle band the surface is flat; at each lip it rolls away.
 
 ```glsl
-float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
-e = e * e * (3.0 - 2.0 * e);
-vEdge = e * (uWarp + uRest);
-
-float shrink = vEdge * 0.30;
-vec2 t = aPos - 0.5;                      // tile space, not screen space
-p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
-                     (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
+float m = min(p.y, 1.0 - p.y);
+float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+if (m < band && phiMax > 0.0005) {
+  float u    = m / band;                  // 1 at the band edge, 0 at the lip
+  float phi  = (1.0 - u) * phiMax;
+  float roll = sin(phi) / sin(phiMax);    // arc length -> what the eye sees
+  float mNew = band * (1.0 - roll);       // spacing bunches toward the lip
+  float depth = 1.0 - cos(phi);
+  float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+  ...
+}
 ```
 
-The taper is applied in **tile space**, which is the detail that makes it read
-correctly. Measuring a card in the reference closeup: as it enters from below
-its left edge moves +24px right while its right edge moves -22px left — it
-narrows about its own centre, not the screen's. Applying the same taper in
-screen space instead makes it look like the whole viewport is being lensed,
-which is wrong.
+The vertical term is the one that matters. A point's arc length along the
+surface grows linearly, but its **projection** grows as `sin(phi)`, so spacing
+bunches up as the surface turns edge-on. Scaling a tile alone only ever looks
+squashed — compressing the spacing is what makes it read as rolling.
 
-Because `e` varies down the tile's own height, the near-lip end shrinks more
-than the far end, so the sides curve and the tile reads as tipping away.
+`phiMax` is the roll angle at the lip, so **Angle** of 1 is a full quarter turn.
 
 ## Dispersion
 
-The warped edges get a chromatic split. `vEdge` is carried into the fragment
-shader, and red and blue are sampled apart along the tile's own x axis:
+Eight samples are taken across the smear and each is weighted by a wavelength,
+so the result resolves into a continuous spectrum rather than a two-tone fringe:
 
 ```glsl
-vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
-c.r = texture(uTex, vUv + off).r;
-c.b = texture(uTex, vUv - off).b;
+for (int i = 0; i < 8; i++) {
+  float s = float(i) / 7.0;
+  vec3  w = spectrum(s);
+  sum  += texture(uTex, vUv + off * (s - 0.5) * 2.0).rgb * w;
+  wsum += w;
+}
+c.rgb = sum / wsum;
 ```
 
-The offset scales with distance from the tile's centre, so it is zero in the
-middle of an image and strongest at the left and right edges — exactly where
-the taper is doing the most work. It also scales with `vEdge`, so it fades out
-completely once the tile leaves the band.
+The offset scales with distance from the tile's centre and with `vEdge`, so it
+is zero mid-image, strongest at the left and right edges, and gone entirely once
+the tile leaves the band. Push past 0.3 for a heavy prism.
+
+The eight samples are guarded by `if (amount > 0.0005)`, so only fragments
+actually inside the warp band pay for them.
 
 ## Dials
 
@@ -82,8 +88,8 @@ completely once the tile leaves the band.
   between stays flat. Larger values distort more of the screen.
 - **Intensity** (1.3) — how hard a given scroll speed warps.
 - **Resting curl** (0.02) — what remains when still. 0 is velocity-only.
-- **Dispersion** (0.06) — how far red and blue split on the warped edges.
-- **Angle** (0.30) — how hard a tile tapers once it reaches the lip.
+- **Dispersion** (0.12, up to 0.6) — prismatic spread on the rolled edges.
+- **Angle** (0.35) — how far the surface rolls at the lip. 1 is a quarter turn.
 - **At the lip** — *Shrink*: tiles are smallest at the edge and open up as they
   reach the middle. *Grow*: the reverse, tiles are largest at the edge.
 - **Space before / Space after** (0) — clear screens before the first row and
