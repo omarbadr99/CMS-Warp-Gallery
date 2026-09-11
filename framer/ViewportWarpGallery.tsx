@@ -84,6 +84,7 @@ export default function ViewportWarpGallery(props) {
         warpOn = true,
         edgeBand = 0.15,
         restingCurl = 0.02,
+        dispersion = 0.06,
         scrollSpeed = 0.11,
         intensity = 1.3,
         background = "transparent",
@@ -250,6 +251,7 @@ export default function ViewportWarpGallery(props) {
         intensity,
         edgeBand,
         restingCurl,
+        dispersion,
     }
 
     /* ---------------- WebGL ---------------- */
@@ -285,15 +287,25 @@ export default function ViewportWarpGallery(props) {
            rises to one at the very lip, so a tile only distorts once it gets
            there. The curl pushes content further from the horizontal centre
            further inward, which reads as the tile bending over a rim. */
+        /* e is 0 outside the band and rises to 1 at the very lip, so a tile is
+           pristine through the middle of the screen and only reacts once it
+           arrives at the top or bottom.
+
+           Measured off the reference closeup: a card entering from below
+           narrows toward the lip, and it narrows about ITS OWN centre, not the
+           screen's — its left edge moved +24px right while its right edge moved
+           -22px left. So the taper is applied in tile space, which is why it
+           reads as the tile tipping away rather than the screen being lensed. */
         const BODY = `
-  vec2 d = p - 0.5;
+  vec2 p = (uRect.xy + aPos * uRect.zw) / uRes;
   float band = max(uBand, 0.001);
   float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
   e = e * e * (3.0 - 2.0 * e);
-  float amt = uWarp + uRest;
-  p.x = 0.5 + d.x * (1.0 + amt * e * 0.18);
-  float dir = p.y < 0.5 ? 1.0 : -1.0;
-  p.y += dir * amt * e * d.x * d.x * 0.18;
+  vEdge = e * (uWarp + uRest);
+  float shrink = vEdge * 0.30;
+  vec2 t = aPos - 0.5;
+  p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
+                       (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);`
 
         const VERT = isGL2
@@ -301,14 +313,14 @@ export default function ViewportWarpGallery(props) {
 in vec2 aPos;
 uniform vec4 uRect; uniform vec2 uRes;
 uniform float uWarp; uniform float uBand; uniform float uRest;
-out vec2 vUv;
-void main(){ vUv = aPos; vec2 p = (uRect.xy + aPos * uRect.zw) / uRes;${BODY} }`
+out vec2 vUv; out float vEdge;
+void main(){ vUv = aPos;${BODY} }`
             : `
 attribute vec2 aPos;
 uniform vec4 uRect; uniform vec2 uRes;
 uniform float uWarp; uniform float uBand; uniform float uRest;
-varying vec2 vUv;
-void main(){ vUv = aPos; vec2 p = (uRect.xy + aPos * uRect.zw) / uRes;${BODY} }`
+varying vec2 vUv; varying float vEdge;
+void main(){ vUv = aPos;${BODY} }`
 
         const derivs = isGL2 || !!gl.getExtension("OES_standard_derivatives")
         const EDGE = derivs
@@ -322,15 +334,25 @@ void main(){ vUv = aPos; vec2 p = (uRect.xy + aPos * uRect.zw) / uRes;${BODY} }`
         const FRAG = isGL2
             ? `#version 300 es
 precision highp float;
-in vec2 vUv; uniform sampler2D uTex; uniform float uGray; out vec4 frag;
-void main(){ vec4 c = texture(uTex, vUv);
+in vec2 vUv; in float vEdge;
+uniform sampler2D uTex; uniform float uGray; uniform float uDisp; out vec4 frag;
+void main(){
+  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
+  vec4 c = texture(uTex, vUv);
+  c.r = texture(uTex, vUv + off).r;
+  c.b = texture(uTex, vUv - off).b;
   float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));${EDGE}
   frag = vec4(mix(c.rgb, vec3(g), uGray), c.a) * edge; }`
             : `
 #extension GL_OES_standard_derivatives : enable
 precision highp float;
-varying vec2 vUv; uniform sampler2D uTex; uniform float uGray;
-void main(){ vec4 c = texture2D(uTex, vUv);
+varying vec2 vUv; varying float vEdge;
+uniform sampler2D uTex; uniform float uGray; uniform float uDisp;
+void main(){
+  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
+  vec4 c = texture2D(uTex, vUv);
+  c.r = texture2D(uTex, vUv + off).r;
+  c.b = texture2D(uTex, vUv - off).b;
   float g = dot(c.rgb, vec3(0.2126,0.7152,0.0722));${EDGE}
   gl_FragColor = vec4(mix(c.rgb, vec3(g), uGray), c.a) * edge; }`
 
@@ -359,7 +381,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
         gl.useProgram(prog)
 
         const uni: any = {}
-        ;["uRect", "uRes", "uWarp", "uBand", "uRest", "uTex", "uGray"].forEach(
+        ;["uRect", "uRes", "uWarp", "uBand", "uRest", "uDisp", "uTex", "uGray"].forEach(
             (n) => (uni[n] = gl.getUniformLocation(prog, n))
         )
         gl.uniform1i(uni.uTex, 0)
@@ -588,6 +610,7 @@ void main(){ vec4 c = texture2D(uTex, vUv);
             gl.uniform1f(uni.uWarp, warp)
             gl.uniform1f(uni.uBand, L.edgeBand)
             gl.uniform1f(uni.uRest, restNow)
+            gl.uniform1f(uni.uDisp, L.dispersion)
             gl.activeTexture(gl.TEXTURE0)
 
             const bg = L.hover === "gray2color" ? 1 : 0
@@ -859,6 +882,14 @@ addPropertyControls(ViewportWarpGallery, {
         title: "Scroll speed",
         min: 0.03, max: 0.4, step: 0.005, defaultValue: 0.11,
         hidden: (p) => !p.warpOn,
+    },
+    dispersion: {
+        type: ControlType.Number,
+        title: "Dispersion",
+        min: 0, max: 0.15, step: 0.005, defaultValue: 0.06,
+        hidden: (p) => !p.warpOn,
+        description:
+            "Chromatic split on the warped edges. Red and blue are sampled apart, strongest where the taper bites hardest.",
     },
     intensity: {
         type: ControlType.Number,

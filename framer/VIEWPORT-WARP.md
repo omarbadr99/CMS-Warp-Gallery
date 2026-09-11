@@ -42,20 +42,39 @@ tile is untouched until it reaches the top or bottom of the viewport:
 ```glsl
 float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
 e = e * e * (3.0 - 2.0 * e);
-float amt = uWarp + uRest;
-p.x  = 0.5 + d.x * (1.0 + amt * e * 0.18);      // spreads toward the lip
-p.y += dir * amt * e * d.x * d.x * 0.18;        // outer corners dip inward
+vEdge = e * (uWarp + uRest);
+
+float shrink = vEdge * 0.30;
+vec2 t = aPos - 0.5;                      // tile space, not screen space
+p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
+                     (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
 ```
 
-Measured off the reference: a tile at the lip keeps a dead-vertical edge where
-it crosses the middle of the screen and tapers outward toward the sides, with
-its horizontal edges staying straight. So the dominant term is a horizontal
-spread, with only a small quadratic dip. Both terms are even in x, so the grid
-cannot tilt to one side.
+The taper is applied in **tile space**, which is the detail that makes it read
+correctly. Measuring a card in the reference closeup: as it enters from below
+its left edge moves +24px right while its right edge moves -22px left — it
+narrows about its own centre, not the screen's. Applying the same taper in
+screen space instead makes it look like the whole viewport is being lensed,
+which is wrong.
 
-`amt` is `uWarp + uRest`. `uWarp` comes from scroll velocity, so the effect
-scales with how hard you scroll; `uRest` is what remains when the scroll stops
-and defaults to nearly nothing, matching the reference.
+Because `e` varies down the tile's own height, the near-lip end shrinks more
+than the far end, so the sides curve and the tile reads as tipping away.
+
+## Dispersion
+
+The warped edges get a chromatic split. `vEdge` is carried into the fragment
+shader, and red and blue are sampled apart along the tile's own x axis:
+
+```glsl
+vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
+c.r = texture(uTex, vUv + off).r;
+c.b = texture(uTex, vUv - off).b;
+```
+
+The offset scales with distance from the tile's centre, so it is zero in the
+middle of an image and strongest at the left and right edges — exactly where
+the taper is doing the most work. It also scales with `vEdge`, so it fades out
+completely once the tile leaves the band.
 
 ## Dials
 
@@ -63,6 +82,7 @@ and defaults to nearly nothing, matching the reference.
   between stays flat. Larger values distort more of the screen.
 - **Intensity** (1.3) — how hard a given scroll speed warps.
 - **Resting curl** (0.02) — what remains when still. 0 is velocity-only.
+- **Dispersion** (0.06) — how far red and blue split on the warped edges.
 
 ## Performance
 

@@ -646,6 +646,7 @@ const PRESET = () => ({
   warpStyle: "edges",         // cylinder | edges
   edgeBand:  0.15,            // how far in from the top/bottom the curl reaches
   edgeRest:  0.02,            // curl that remains when the scroll stops
+  dispersion: 0.060,          // chromatic split on the warped edges
   scrollSpeed: 0.11,          // smoothing — lower trails further, warps harder
   warpAmount:  1.3,           // multiplier on the distortion
 
@@ -1086,12 +1087,14 @@ uniform float uStyle;   // 0 = cylinder, 1 = viewport edges
 uniform float uBand;    // edge band height, in viewport fractions
 uniform float uRest;    // curl that stays when the scroll stops
 out vec2 vUv;
+out float vEdge;
 void main() {
   vUv = aPos;
   vec2 px = uRect.xy + aPos * uRect.zw;
   vec2 p  = px / uRes;
   vec2 d = p - 0.5;
 
+  vEdge = 0.0;
   if (uStyle < 0.5) {
     /* ---- Cylinder: the whole viewport curves, middle pinched ---- */
     float u = clamp(2.0 * d.y, -1.0, 1.0);
@@ -1101,22 +1104,24 @@ void main() {
     float uv = u / (1.0 + kv * u * u);
     p = 0.5 + vec2(d.x * sx, uv * 0.5);
   } else {
-    /* ---- Viewport edges: flat through the middle, tips at top and bottom.
-       e is 0 outside the band and rises to 1 at the very lip, so a tile stays
-       pristine until it reaches the edge of the viewport.
+    /* ---- Viewport edges ----------------------------------------------
+       e is 0 outside the band and rises to 1 at the very lip, so a tile is
+       pristine through the middle of the screen and only reacts once it
+       arrives at the top or bottom.
 
-       Measured off the reference: a tile sitting at the lip has a dead-vertical
-       edge where it crosses the middle of the screen and tapers outward toward
-       the sides, with its horizontal edges staying straight. So the main term
-       is a horizontal spread that grows into the band, plus a much smaller dip
-       that pulls the outer corners back into the viewport. ---- */
+       Measured off the reference closeup: a card entering from below narrows
+       toward the lip, and it narrows about ITS OWN centre, not the screen's -
+       its left edge moved +24px right while its right edge moved -22px left.
+       So the taper is applied in tile space, which is why it reads as the tile
+       itself tipping away rather than the whole screen being lensed. ---- */
     float band = max(uBand, 0.001);
     float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
     e = e * e * (3.0 - 2.0 * e);
-    float amt = uWarp + uRest;
-    p.x = 0.5 + d.x * (1.0 + amt * e * 0.18);
-    float dir = p.y < 0.5 ? 1.0 : -1.0;
-    p.y += dir * amt * e * d.x * d.x * 0.18;
+    vEdge = e * (uWarp + uRest);
+    float shrink = vEdge * 0.30;
+    vec2 t = aPos - 0.5;
+    p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
+                         (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
   }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
@@ -1124,11 +1129,16 @@ void main() {
 const FRAG = `#version 300 es
 precision highp float;
 in vec2 vUv;
+in float vEdge;
 uniform sampler2D uTex;
 uniform float uGray;
+uniform float uDisp;
 out vec4 frag;
 void main() {
+  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
   vec4 c = texture(uTex, vUv);
+  c.r = texture(uTex, vUv + off).r;
+  c.b = texture(uTex, vUv - off).b;
   float g = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
   frag = vec4(mix(c.rgb, vec3(g), uGray), c.a);
 }`;
@@ -1171,12 +1181,14 @@ uniform float uStyle;
 uniform float uBand;
 uniform float uRest;
 varying vec2 vUv;
+varying float vEdge;
 void main() {
   vUv = aPos;
   vec2 px = uRect.xy + aPos * uRect.zw;
   vec2 p  = px / uRes;
   vec2 d = p - 0.5;
 
+  vEdge = 0.0;
   if (uStyle < 0.5) {
     /* ---- Cylinder: the whole viewport curves, middle pinched ---- */
     float u = clamp(2.0 * d.y, -1.0, 1.0);
@@ -1186,22 +1198,24 @@ void main() {
     float uv = u / (1.0 + kv * u * u);
     p = 0.5 + vec2(d.x * sx, uv * 0.5);
   } else {
-    /* ---- Viewport edges: flat through the middle, tips at top and bottom.
-       e is 0 outside the band and rises to 1 at the very lip, so a tile stays
-       pristine until it reaches the edge of the viewport.
+    /* ---- Viewport edges ----------------------------------------------
+       e is 0 outside the band and rises to 1 at the very lip, so a tile is
+       pristine through the middle of the screen and only reacts once it
+       arrives at the top or bottom.
 
-       Measured off the reference: a tile sitting at the lip has a dead-vertical
-       edge where it crosses the middle of the screen and tapers outward toward
-       the sides, with its horizontal edges staying straight. So the main term
-       is a horizontal spread that grows into the band, plus a much smaller dip
-       that pulls the outer corners back into the viewport. ---- */
+       Measured off the reference closeup: a card entering from below narrows
+       toward the lip, and it narrows about ITS OWN centre, not the screen's -
+       its left edge moved +24px right while its right edge moved -22px left.
+       So the taper is applied in tile space, which is why it reads as the tile
+       itself tipping away rather than the whole screen being lensed. ---- */
     float band = max(uBand, 0.001);
     float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
     e = e * e * (3.0 - 2.0 * e);
-    float amt = uWarp + uRest;
-    p.x = 0.5 + d.x * (1.0 + amt * e * 0.18);
-    float dir = p.y < 0.5 ? 1.0 : -1.0;
-    p.y += dir * amt * e * d.x * d.x * 0.18;
+    vEdge = e * (uWarp + uRest);
+    float shrink = vEdge * 0.30;
+    vec2 t = aPos - 0.5;
+    p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
+                         (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
   }
   gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
 }`;
@@ -1209,10 +1223,15 @@ void main() {
 const FRAG_1 = `
 precision highp float;
 varying vec2 vUv;
+varying float vEdge;
 uniform sampler2D uTex;
 uniform float uGray;
+uniform float uDisp;
 void main() {
+  vec2 off = vec2((vUv.x - 0.5) * 2.0, 0.0) * vEdge * uDisp;
   vec4 c = texture2D(uTex, vUv);
+  c.r = texture2D(uTex, vUv + off).r;
+  c.b = texture2D(uTex, vUv - off).b;
   float g = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
   gl_FragColor = vec4(mix(c.rgb, vec3(g), uGray), c.a);
 }`;
@@ -1232,7 +1251,7 @@ function initGL() {
   if (!prog) { stage.dataset.nogl = "1"; return false; }
 
   gl.useProgram(prog);
-  ["uRect", "uRes", "uWarp", "uStyle", "uBand", "uRest", "uTex", "uGray"].forEach(n => {
+  ["uRect", "uRes", "uWarp", "uStyle", "uBand", "uRest", "uDisp", "uTex", "uGray"].forEach(n => {
     uni[n] = gl.getUniformLocation(prog, n);
   });
   gl.uniform1i(uni.uTex, 0);
@@ -1469,6 +1488,7 @@ function frame(now) {
   gl.uniform1f(uni.uStyle, cfg.warpStyle === "edges" ? 1 : 0);
   gl.uniform1f(uni.uBand, cfg.edgeBand);
   gl.uniform1f(uni.uRest, cfg.warp ? cfg.edgeRest : 0);
+  gl.uniform1f(uni.uDisp, cfg.dispersion);
   gl.activeTexture(gl.TEXTURE0);
 
   const bg = baseGray(), hg = hoverGray();
@@ -1739,6 +1759,7 @@ function rebuildRail() {
     ], () => {})));
     b.appendChild(ctlRow("Edge band", rangeCtl("edgeBand", 0.05, 0.5, 0.01, v => v.toFixed(2))));
     b.appendChild(ctlRow("Resting curl", rangeCtl("edgeRest", 0, 0.5, 0.01, v => v.toFixed(2))));
+    b.appendChild(ctlRow("Dispersion", rangeCtl("dispersion", 0, 0.15, 0.005, v => v.toFixed(3))));
     b.appendChild(ctlRow("Scroll speed", rangeCtl("scrollSpeed", 0.03, 0.4, 0.005, v => v.toFixed(3))));
     b.appendChild(ctlRow("Intensity", rangeCtl("warpAmount", 0, 3, 0.05, v => v.toFixed(2) + "x")));
     b.appendChild(el("p", "hint", reduceMotion
