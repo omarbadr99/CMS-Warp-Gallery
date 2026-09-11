@@ -83,6 +83,12 @@ completely once the tile leaves the band.
 - **Intensity** (1.3) — how hard a given scroll speed warps.
 - **Resting curl** (0.02) — what remains when still. 0 is velocity-only.
 - **Dispersion** (0.06) — how far red and blue split on the warped edges.
+- **Angle** (0.30) — how hard a tile tapers once it reaches the lip.
+- **At the lip** — *Shrink*: tiles are smallest at the edge and open up as they
+  reach the middle. *Grow*: the reverse, tiles are largest at the edge.
+- **Space before / Space after** (0) — clear screens before the first row and
+  after the last, in viewport heights. Set both to 1 to watch images enter from
+  off-frame and leave completely.
 
 ## Performance
 

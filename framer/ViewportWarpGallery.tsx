@@ -83,6 +83,10 @@ export default function ViewportWarpGallery(props) {
 
         warpOn = true,
         edgeBand = 0.15,
+        edgeAngle = 0.3,
+        edgeScale = "shrink",
+        spaceBefore = 0,
+        spaceAfter = 0,
         restingCurl = 0.02,
         dispersion = 0.06,
         scrollSpeed = 0.11,
@@ -168,6 +172,14 @@ export default function ViewportWarpGallery(props) {
     }, [siblings.map((e) => e.id + ":" + e.src).join("|"), columns, pattern])
 
     const [width, setWidth] = useState(0)
+    const [vh, setVh] = useState(
+        typeof window === "undefined" ? 800 : window.innerHeight
+    )
+    useEffect(() => {
+        const onR = () => setVh(window.innerHeight)
+        window.addEventListener("resize", onR)
+        return () => window.removeEventListener("resize", onR)
+    }, [])
     const [aspects, setAspects] = useState<Record<string, number>>({})
 
     useEffect(() => {
@@ -217,7 +229,11 @@ export default function ViewportWarpGallery(props) {
             byRow.get(it.row)!.push(it)
         })
         const cells: any[] = []
-        let y = padding
+        // Clear viewports before and after, so images can be watched entering
+        // from off-frame and leaving completely.
+        const lead = Math.round(spaceBefore * vh)
+        const tail = Math.round(spaceAfter * vh)
+        let y = padding + lead
         const keys = [...byRow.keys()].sort((a, b) => a - b)
         keys.forEach((rk, ri) => {
             const list = byRow.get(rk)!
@@ -239,8 +255,8 @@ export default function ViewportWarpGallery(props) {
             })
             y += rowH + (ri < keys.length - 1 ? gapY : 0)
         })
-        return { cells, height: Math.max(1, Math.round(y + padding)) }
-    }, [items, aspects, width, columns, gapX, gapY, padding, imageSize])
+        return { cells, height: Math.max(1, Math.round(y + padding + tail)) }
+    }, [items, aspects, width, vh, columns, gapX, gapY, padding, imageSize, spaceBefore, spaceAfter])
 
     const live = useRef({} as any)
     live.current = {
@@ -250,6 +266,8 @@ export default function ViewportWarpGallery(props) {
         scrollSpeed,
         intensity,
         edgeBand,
+        edgeAngle,
+        edgeScale,
         restingCurl,
         dispersion,
     }
@@ -302,7 +320,7 @@ export default function ViewportWarpGallery(props) {
   float e = 1.0 - clamp(min(p.y, 1.0 - p.y) / band, 0.0, 1.0);
   e = e * e * (3.0 - 2.0 * e);
   vEdge = e * (uWarp + uRest);
-  float shrink = vEdge * 0.30;
+  float shrink = vEdge * uAngle * uDir;
   vec2 t = aPos - 0.5;
   p = (uRect.xy + vec2((0.5 + t.x * (1.0 - shrink)) * uRect.z,
                        (0.5 + t.y * (1.0 - shrink * 0.35)) * uRect.w)) / uRes;
@@ -313,12 +331,14 @@ export default function ViewportWarpGallery(props) {
 in vec2 aPos;
 uniform vec4 uRect; uniform vec2 uRes;
 uniform float uWarp; uniform float uBand; uniform float uRest;
+uniform float uAngle; uniform float uDir;
 out vec2 vUv; out float vEdge;
 void main(){ vUv = aPos;${BODY} }`
             : `
 attribute vec2 aPos;
 uniform vec4 uRect; uniform vec2 uRes;
 uniform float uWarp; uniform float uBand; uniform float uRest;
+uniform float uAngle; uniform float uDir;
 varying vec2 vUv; varying float vEdge;
 void main(){ vUv = aPos;${BODY} }`
 
@@ -381,7 +401,7 @@ void main(){
         gl.useProgram(prog)
 
         const uni: any = {}
-        ;["uRect", "uRes", "uWarp", "uBand", "uRest", "uDisp", "uTex", "uGray"].forEach(
+        ;["uRect", "uRes", "uWarp", "uBand", "uRest", "uAngle", "uDir", "uDisp", "uTex", "uGray"].forEach(
             (n) => (uni[n] = gl.getUniformLocation(prog, n))
         )
         gl.uniform1i(uni.uTex, 0)
@@ -611,6 +631,8 @@ void main(){
             gl.uniform1f(uni.uBand, L.edgeBand)
             gl.uniform1f(uni.uRest, restNow)
             gl.uniform1f(uni.uDisp, L.dispersion)
+            gl.uniform1f(uni.uAngle, L.edgeAngle)
+            gl.uniform1f(uni.uDir, L.edgeScale === "grow" ? -1 : 1)
             gl.activeTexture(gl.TEXTURE0)
 
             const bg = L.hover === "gray2color" ? 1 : 0
@@ -835,6 +857,18 @@ addPropertyControls(ViewportWarpGallery, {
     gapY: { type: ControlType.Number, title: "Gap Y", min: 0, max: 320, defaultValue: 16 },
     padding: { type: ControlType.Number, title: "Padding", min: 0, max: 200, defaultValue: 40 },
     background: { type: ControlType.Color, title: "Background", defaultValue: "transparent" },
+    spaceBefore: {
+        type: ControlType.Number,
+        title: "Space before",
+        min: 0, max: 2, step: 0.1, defaultValue: 0,
+        description: "Clear screens before the first row, in viewport heights.",
+    },
+    spaceAfter: {
+        type: ControlType.Number,
+        title: "Space after",
+        min: 0, max: 2, step: 0.1, defaultValue: 0,
+        description: "Clear screens after the last row, in viewport heights.",
+    },
 
     hover: {
         type: ControlType.Enum,
@@ -869,6 +903,23 @@ addPropertyControls(ViewportWarpGallery, {
         hidden: (p) => !p.warpOn,
         description:
             "How far in from the top and bottom the curl reaches. Everything between stays flat.",
+    },
+    edgeAngle: {
+        type: ControlType.Number,
+        title: "Angle",
+        min: 0, max: 1, step: 0.01, defaultValue: 0.3,
+        hidden: (p) => !p.warpOn,
+        description: "How hard a tile tapers once it reaches the lip.",
+    },
+    edgeScale: {
+        type: ControlType.Enum,
+        title: "At the lip",
+        options: ["shrink", "grow"],
+        optionTitles: ["Shrink", "Grow"],
+        defaultValue: "shrink",
+        hidden: (p) => !p.warpOn,
+        description:
+            "Shrink: tiles are smallest at the edge and open up as they reach the middle. Grow: the reverse.",
     },
     restingCurl: {
         type: ControlType.Number,
