@@ -651,7 +651,7 @@ const PRESET = () => ({
   edgeBand:  0.15,            // how far in from the top/bottom the curl reaches
   edgeRest:  0.02,            // curl that remains when the scroll stops
   dispersion: 0.120,          // chromatic split on the warped edges
-  edgeAngle: 0.35,            // how hard tiles taper at the lip
+  edgeAngle: 0.70,            // how hard tiles taper at the lip
   edgeScale: "shrink",        // shrink | grow  (at the lip)
   leadIn:    1.0,             // clear viewports before the first row
   leadOut:   1.0,             // clear viewports after the last row
@@ -1130,7 +1130,7 @@ void main() {
     float band = max(uBand, 0.001);
     float m = min(p.y, 1.0 - p.y);
     float amt = uWarp + uRest;
-    float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+    float phiMax = uAngle * 1.5707963 * clamp(amt * 6.0, 0.0, 1.0);
     if (m < band && phiMax > 0.0005) {
       float u = m / band;                    // 1 at the band edge, 0 at the lip
       float phi = (1.0 - u) * phiMax;
@@ -1138,7 +1138,7 @@ void main() {
       float mNew = band * (1.0 - roll);
       float depth = 1.0 - cos(phi);          // how far it has receded
       vEdge = amt * depth / max(1.0 - cos(phiMax), 1e-4);
-      float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+      float sx = 1.0 / (1.0 + uDir * depth * 0.90);
       vec2 tl = aPos - 0.5;
       p = vec2((uRect.x + (0.5 + tl.x * sx) * uRect.z) / uRes.x,
                (p.y < 0.5) ? mNew : 1.0 - mNew);
@@ -1252,7 +1252,7 @@ void main() {
     float band = max(uBand, 0.001);
     float m = min(p.y, 1.0 - p.y);
     float amt = uWarp + uRest;
-    float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+    float phiMax = uAngle * 1.5707963 * clamp(amt * 6.0, 0.0, 1.0);
     if (m < band && phiMax > 0.0005) {
       float u = m / band;                    // 1 at the band edge, 0 at the lip
       float phi = (1.0 - u) * phiMax;
@@ -1260,7 +1260,7 @@ void main() {
       float mNew = band * (1.0 - roll);
       float depth = 1.0 - cos(phi);          // how far it has receded
       vEdge = amt * depth / max(1.0 - cos(phiMax), 1e-4);
-      float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+      float sx = 1.0 / (1.0 + uDir * depth * 0.90);
       vec2 tl = aPos - 0.5;
       p = vec2((uRect.x + (0.5 + tl.x * sx) * uRect.z) / uRes.x,
                (p.y < 0.5) ? mNew : 1.0 - mNew);

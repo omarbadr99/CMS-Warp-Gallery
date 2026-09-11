@@ -83,7 +83,7 @@ export default function ViewportWarpGallery(props) {
 
         warpOn = true,
         edgeBand = 0.15,
-        edgeAngle = 0.35,
+        edgeAngle = 0.7,
         edgeScale = "shrink",
         spaceBefore = 0,
         spaceAfter = 0,
@@ -328,7 +328,7 @@ export default function ViewportWarpGallery(props) {
   float band = max(uBand, 0.001);
   float m = min(p.y, 1.0 - p.y);
   float amt = uWarp + uRest;
-  float phiMax = uAngle * 1.5707963 * clamp(amt * 2.2, 0.0, 1.0);
+  float phiMax = uAngle * 1.5707963 * clamp(amt * 6.0, 0.0, 1.0);
   if (m < band && phiMax > 0.0005) {
     float u = m / band;                    // 1 at the band edge, 0 at the lip
     float phi = (1.0 - u) * phiMax;
@@ -336,7 +336,7 @@ export default function ViewportWarpGallery(props) {
     float mNew = band * (1.0 - roll);
     float depth = 1.0 - cos(phi);          // how far it has receded
     vEdge = amt * depth / max(1.0 - cos(phiMax), 1e-4);
-    float sx = 1.0 / (1.0 + uDir * depth * 0.40);
+    float sx = 1.0 / (1.0 + uDir * depth * 0.90);
     vec2 tl = aPos - 0.5;
     p = vec2((uRect.x + (0.5 + tl.x * sx) * uRect.z) / uRes.x,
              (p.y < 0.5) ? mNew : 1.0 - mNew);
@@ -956,9 +956,9 @@ addPropertyControls(ViewportWarpGallery, {
     edgeAngle: {
         type: ControlType.Number,
         title: "Angle",
-        min: 0, max: 1, step: 0.01, defaultValue: 0.35,
+        min: 0, max: 1, step: 0.01, defaultValue: 0.7,
         hidden: (p) => !p.warpOn,
-        description: "How far the surface rolls at the lip. 1 is a full quarter turn.",
+        description: "How far the surface rolls at the lip; 1 is a full quarter turn. This model is near-identity below about 30 degrees, so low values do almost nothing.",
     },
     edgeScale: {
         type: ControlType.Enum,

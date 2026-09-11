@@ -60,6 +60,15 @@ squashed — compressing the spacing is what makes it read as rolling.
 
 `phiMax` is the roll angle at the lip, so **Angle** of 1 is a full quarter turn.
 
+**This model is near-identity at small angles and that is easy to get wrong.**
+For small `phi`, `sin(phi)/sin(phiMax)` tends to `phi/phiMax` — exactly linear,
+so there is no compression at all — and `1 - cos(phi)` tends to `phi^2/2`, which
+vanishes. Below roughly 30 degrees the whole effect is invisible: at 19 degrees
+it is a 3.8% width change and a 2.6% spacing shift. `phiMax` has to reach the
+45-65 degree range at a normal scroll for anything to be visible, which is why
+the velocity ramp saturates early (`clamp(amt * 6.0, 0.0, 1.0)`) rather than
+scaling gently.
+
 ## Dispersion
 
 Eight samples are taken across the smear and each is weighted by a wavelength,
@@ -89,7 +98,8 @@ actually inside the warp band pay for them.
 - **Intensity** (1.3) — how hard a given scroll speed warps.
 - **Resting curl** (0.02) — what remains when still. 0 is velocity-only.
 - **Dispersion** (0.12, up to 0.6) — prismatic spread on the rolled edges.
-- **Angle** (0.35) — how far the surface rolls at the lip. 1 is a quarter turn.
+- **Angle** (0.70) — how far the surface rolls at the lip; 1 is a quarter turn.
+  Values below ~0.35 do almost nothing, see the note above.
 - **At the lip** — *Shrink*: tiles are smallest at the edge and open up as they
   reach the middle. *Grow*: the reverse, tiles are largest at the edge.
 - **Space before / Space after** (0) — clear screens before the first row and
