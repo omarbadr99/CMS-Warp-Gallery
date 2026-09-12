@@ -4,76 +4,278 @@ import { useEffect, useMemo, useRef, useState } from "react"
 /**
  * Viewport Warp Gallery — CMS edition
  *
- * Drop one of these inside a Collection List and bind Image, Title and Link to
- * CMS fields. Every instance sharing a Gallery ID registers itself into one
- * shared list; the first instance in document order draws the whole gallery and
- * the rest collapse to nothing.
+ * This code file exports TWO components:
+ *
+ *   • Warp Gallery Item   — put ONE inside your Collection List and bind
+ *                           Image / Title / Link to CMS fields. It draws
+ *                           nothing; it just reports its CMS row.
+ *   • Viewport Warp Gallery — put ONE on the page, OUTSIDE the list, set to
+ *                           Fill width. It draws every reported row.
+ *
+ * They find each other through a shared Gallery ID. The gallery must live
+ * outside the list because a component inside a Collection List is trapped in
+ * one grid cell — it can only ever be as wide as that cell.
  *
  * The warp only happens at the top and bottom lips of the viewport. A tile is
  * pristine while it is in the middle band and curls over as it reaches an edge,
  * scaled by how hard you are scrolling.
- *
- * @framerSupportedLayoutWidth any
- * @framerSupportedLayoutHeight any-prefer-fixed
- * @framerIntrinsicWidth 1200
- * @framerIntrinsicHeight 1400
- * @framerDisableUnlink
  */
 
 /* ------------------------------------------------------------------
-   Shared registry. Instances inside a Collection List cannot see each
-   other through props, so they meet here, keyed by Gallery ID.
+   Shared registry. Items inside a Collection List cannot see the
+   gallery through props, so they meet here, keyed by Gallery ID.
    ------------------------------------------------------------------ */
 type Entry = {
-    id: number
+    key: string
     el: HTMLElement | null
     src: string
     title: string
     link: string
     newTab: boolean
 }
-type Store = { entries: Map<number, Entry>; listeners: Set<() => void> }
+type Store = { entries: Map<string, Entry>; listeners: Set<() => void> }
 
 const registries: Map<string, Store> = new Map()
-let nextId = 1
+let nextKey = 1
 
 function storeFor(gallery: string): Store {
-    let st = registries.get(gallery)
+    const id = gallery || "default"
+    let st = registries.get(id)
     if (!st) {
         st = { entries: new Map(), listeners: new Set() }
-        registries.set(gallery, st)
+        registries.set(id, st)
     }
     return st
 }
 function publish(st: Store) {
     st.listeners.forEach((fn) => fn())
 }
-/** Document order, so the gallery follows the Collection List's own order. */
-function ordered(st: Store): Entry[] {
-    const list = [...st.entries.values()].filter((e) => e.el && e.el.isConnected)
+
+/** display:none anywhere up the tree zeroes both of these. A 0-height marker
+ *  inside a live subtree still reports an offsetParent, so it survives. */
+function isVisible(el: HTMLElement | null): boolean {
+    if (!el || !el.isConnected) return false
+    return el.offsetParent !== null || el.getClientRects().length > 0
+}
+
+/** Steps up from `from` before reaching an ancestor that also contains `to`.
+ *  Items in the same breakpoint frame as the gallery score low; the copies
+ *  Framer emits for the other breakpoints score high. */
+function distance(from: HTMLElement, to: HTMLElement): number {
+    let n: HTMLElement | null = from
+    let d = 0
+    while (n) {
+        if (n.contains(to)) return d
+        n = n.parentElement
+        d++
+    }
+    return 1e9
+}
+
+/**
+ * Framer puts a copy of the page in the DOM for every breakpoint — hidden ones
+ * on a published site, side-by-side frames on the canvas — so a registry keyed
+ * only by Gallery ID collects each CMS row once per breakpoint. Keeping just
+ * the rows whose nearest shared ancestor with the gallery is closest picks the
+ * one copy that belongs to this gallery, in both cases.
+ */
+function ordered(st: Store, host: HTMLElement | null): Entry[] {
+    let list = [...st.entries.values()].filter((e) => e.el && e.el.isConnected)
+    if (list.length === 0) return list
+
+    const shown = list.filter((e) => isVisible(e.el))
+    if (shown.length) list = shown
+
+    if (host && host.isConnected) {
+        let best = 1e9
+        const scored = list.map((e) => {
+            const d = distance(host, e.el!)
+            if (d < best) best = d
+            return { e, d }
+        })
+        list = scored.filter((s) => s.d === best).map((s) => s.e)
+    }
+
     list.sort((a, b) => {
         const rel = a.el!.compareDocumentPosition(b.el!)
         if (rel & Node.DOCUMENT_POSITION_FOLLOWING) return -1
         if (rel & Node.DOCUMENT_POSITION_PRECEDING) return 1
-        return a.id - b.id
+        return a.key < b.key ? -1 : 1
     })
     return list
 }
 
-export default function ViewportWarpGallery(props) {
+function sameList(a: Entry[], b: Entry[]): boolean {
+    if (a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i]
+        const y = b[i]
+        if (
+            x.key !== y.key || x.src !== y.src || x.title !== y.title ||
+            x.link !== y.link || x.newTab !== y.newTab
+        )
+            return false
+    }
+    return true
+}
+
+/** Subscribe the gallery to its items. Registrations are coalesced into one
+ *  recompute per frame, so a 200-row collection costs one pass, not 200. */
+function useGalleryItems(
+    gallery: string,
+    hostRef: { current: HTMLElement | null }
+): Entry[] {
+    const [items, setItems] = useState<Entry[]>([])
+    useEffect(() => {
+        const st = storeFor(gallery)
+        let raf = 0
+        const recompute = () => {
+            cancelAnimationFrame(raf)
+            raf = requestAnimationFrame(() => {
+                const next = ordered(st, hostRef.current)
+                setItems((prev) => (sameList(prev, next) ? prev : next))
+            })
+        }
+        st.listeners.add(recompute)
+        recompute()
+        // a breakpoint switch changes which copy of the page is the visible one
+        window.addEventListener("resize", recompute)
+        return () => {
+            cancelAnimationFrame(raf)
+            st.listeners.delete(recompute)
+            window.removeEventListener("resize", recompute)
+        }
+    }, [gallery, hostRef])
+    return items
+}
+
+/* ==================================================================
+   1. The item. Goes INSIDE the Collection List.
+   ================================================================== */
+
+/**
+ * @framerSupportedLayoutWidth any-prefer-fixed
+ * @framerSupportedLayoutHeight any-prefer-fixed
+ * @framerIntrinsicWidth 160
+ * @framerIntrinsicHeight 28
+ * @framerDisableUnlink
+ */
+export function WarpGalleryItem(props) {
     const {
         gallery = "default",
         image,
         title = "",
         link = "",
         newTab = false,
+    } = props
+
+    const ref = useRef<HTMLDivElement>(null)
+    const keyRef = useRef("")
+    if (!keyRef.current) keyRef.current = "k" + nextKey++
+
+    const src = typeof image === "string" ? image : image?.src || ""
+    const isCanvas = RenderTarget.current() === RenderTarget.canvas
+
+    useEffect(() => {
+        const st = storeFor(gallery)
+        st.entries.set(keyRef.current, {
+            key: keyRef.current,
+            el: ref.current,
+            src,
+            title,
+            link,
+            newTab,
+        })
+        publish(st)
+        return () => {
+            st.entries.delete(keyRef.current)
+            publish(st)
+        }
+    }, [gallery, src, title, link, newTab])
+
+    // On the canvas it shows a chip so you can see and select it. On a live
+    // page it takes no space at all.
+    if (!isCanvas) return <div ref={ref} style={{ width: "100%", height: 0 }} />
+    return (
+        <div
+            ref={ref}
+            style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 8px",
+                borderRadius: 6,
+                background: "rgba(0,153,255,.08)",
+                border: "1px solid rgba(0,153,255,.35)",
+                font: '10px ui-monospace, "SF Mono", Menlo, monospace',
+                color: "#0077cc",
+                overflow: "hidden",
+                whiteSpace: "nowrap",
+            }}
+        >
+            {src ? (
+                <img
+                    src={src}
+                    alt=""
+                    style={{
+                        width: 18, height: 18, objectFit: "cover",
+                        borderRadius: 3, flex: "none",
+                    }}
+                />
+            ) : null}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                {title || "(bind Title)"}
+            </span>
+        </div>
+    )
+}
+
+addPropertyControls(WarpGalleryItem, {
+    gallery: {
+        type: ControlType.String,
+        title: "Gallery ID",
+        defaultValue: "default",
+        description:
+            "Must match the Gallery ID on the Viewport Warp Gallery you placed on the page.",
+    },
+    image: {
+        type: ControlType.ResponsiveImage,
+        title: "Image",
+        description:
+            "Click the [+] next to the property and choose 'Set Variable' to link a CMS image field.",
+    },
+    title: { type: ControlType.String, title: "Title", defaultValue: "" },
+    link: { type: ControlType.Link, title: "Link" },
+    newTab: { type: ControlType.Boolean, title: "New Tab", defaultValue: false },
+})
+
+/* ==================================================================
+   2. The gallery. Goes on the PAGE, outside the list.
+   ================================================================== */
+
+/**
+ * @framerSupportedLayoutWidth any
+ * @framerSupportedLayoutHeight any-prefer-fixed
+ * @framerIntrinsicWidth 1200
+ * @framerIntrinsicHeight 1400
+ * @framerDisableUnlink
+ */
+export default function ViewportWarpGallery(props) {
+    const {
+        gallery = "default",
 
         columns = 3,
+        columnsTablet = 0,
+        columnsPhone = 0,
         pattern = "0*0\n**0\n0**",
+        patternTablet = "",
+        patternPhone = "",
         gapX = 16,
         gapY = 16,
         padding = 40,
         imageSize = 1,
+        fullBleed = false,
 
         font = 'ui-monospace, "SF Mono", Menlo, monospace',
         textColor = "#8a8f97",
@@ -95,51 +297,66 @@ export default function ViewportWarpGallery(props) {
         style,
     } = props
 
-    const markerRef = useRef<HTMLDivElement>(null)
     const wrapRef = useRef<HTMLDivElement>(null)
     const stageRef = useRef<HTMLDivElement>(null)
     const canvasRef = useRef<HTMLCanvasElement>(null)
     const labelsRef = useRef<HTMLDivElement>(null)
     const labelEls = useRef<(HTMLElement | null)[]>([])
+    /* lets the component nudge the render loop when layout changes under it */
+    const poke = useRef<() => void>(() => {})
 
     const target = RenderTarget.current()
     const isCanvas =
         target === RenderTarget.canvas || target === RenderTarget.thumbnail
 
-    const src = typeof image === "string" ? image : image?.src || ""
-    const myId = useRef(0)
-    if (myId.current === 0) myId.current = nextId++
+    const entries = useGalleryItems(gallery, wrapRef)
 
-    /* ---- register this instance, re-render every instance on change ---- */
-    const [, bump] = useState(0)
+    // If WebGL cannot run — no context, or images the GPU is not allowed to
+    // read — the gallery still draws, just without the warp. It must never
+    // come out blank on a published page.
+    const [glFailed, setGlFailed] = useState(false)
+    const domOnly = isCanvas || glFailed
+
+    const [width, setWidth] = useState(0)
+    const [vh, setVh] = useState(
+        typeof window === "undefined" ? 800 : window.innerHeight
+    )
+    const [dvh, setDvh] = useState("100vh")
     useEffect(() => {
-        const st = storeFor(gallery)
-        st.entries.set(myId.current, {
-            id: myId.current,
-            el: markerRef.current,
-            src,
-            title,
-            link,
-            newTab,
-        })
-        const notify = () => bump((n) => n + 1)
-        st.listeners.add(notify)
-        publish(st)
-        return () => {
-            st.entries.delete(myId.current)
-            st.listeners.delete(notify)
-            publish(st)
-        }
-    }, [gallery, src, title, link, newTab])
+        const onR = () => setVh(window.innerHeight)
+        window.addEventListener("resize", onR)
+        if (typeof CSS !== "undefined" && CSS.supports?.("height", "100dvh"))
+            setDvh("100dvh")
+        return () => window.removeEventListener("resize", onR)
+    }, [])
 
-    const st = storeFor(gallery)
-    const siblings = ordered(st)
-    const isRenderer = siblings.length === 0 || siblings[0]?.id === myId.current
+    useEffect(() => {
+        const el = wrapRef.current
+        if (!el) return
+        const measure = () =>
+            setWidth(Math.round(el.getBoundingClientRect().width))
+        measure()
+        const ro = new ResizeObserver(measure)
+        ro.observe(el)
+        return () => ro.disconnect()
+    }, [])
+
+    /* Columns collapse on smaller screens so tiles stay big enough to read.
+       A pattern is written against a specific column count — "0*0" means
+       nothing at two columns — so each breakpoint carries its own, and an
+       empty one just fills every column. */
+    const [cols, grid] = useMemo(() => {
+        const base = Math.max(1, columns)
+        if (width && width < 600 && columnsPhone > 0)
+            return [Math.max(1, columnsPhone), patternPhone]
+        if (width && width < 1000 && columnsTablet > 0)
+            return [Math.max(1, columnsTablet), patternTablet]
+        return [base, pattern]
+    }, [columns, columnsTablet, columnsPhone, pattern, patternTablet, patternPhone, width])
 
     /* ---- pattern grid -> cells ---- */
     const items = useMemo(() => {
-        const cols = Math.max(1, columns)
-        const lines = String(pattern || "")
+        const lines = String(grid || "")
             .split(/[\n,]/)
             .map((l) => l.replace(/[^0*]/g, ""))
             .filter((l) => l.length > 0)
@@ -155,12 +372,12 @@ export default function ViewportWarpGallery(props) {
         const out: any[] = []
         let ri = 0
         let i = 0
-        while (i < siblings.length) {
+        while (i < entries.length) {
             const row = slotRows.length
                 ? slotRows[ri % slotRows.length]
                 : Array.from({ length: cols }, (_, k) => k)
             row.forEach((col) => {
-                const e = siblings[i]
+                const e = entries[i]
                 if (!e) return
                 out.push({ ...e, col, row: ri, index: i + 1 })
                 i++
@@ -169,40 +386,17 @@ export default function ViewportWarpGallery(props) {
             if (ri > 5000) break
         }
         return out
-    }, [siblings.map((e) => e.id + ":" + e.src).join("|"), columns, pattern])
+    }, [entries, cols, grid])
 
-    const [width, setWidth] = useState(0)
-    const [vh, setVh] = useState(
-        typeof window === "undefined" ? 800 : window.innerHeight
-    )
-    useEffect(() => {
-        const onR = () => setVh(window.innerHeight)
-        window.addEventListener("resize", onR)
-        return () => window.removeEventListener("resize", onR)
-    }, [])
     const [aspects, setAspects] = useState<Record<string, number>>({})
-
-    useEffect(() => {
-        const el = wrapRef.current
-        if (!el || !isRenderer) return
-        const measure = () =>
-            setWidth(Math.round(el.getBoundingClientRect().width))
-        measure()
-        const ro = new ResizeObserver(measure)
-        ro.observe(el)
-        return () => ro.disconnect()
-    }, [isRenderer])
-
     const srcKey = items.map((i) => i.src).join("|")
     useEffect(() => {
-        if (!isRenderer) return
         let alive = true
         const seen = new Set<string>()
         items.forEach((it) => {
             if (!it.src || seen.has(it.src)) return
             seen.add(it.src)
             const img = new Image()
-            img.crossOrigin = "anonymous"
             img.decoding = "async"
             img.onload = () => {
                 if (!alive || !img.width || !img.height) return
@@ -215,12 +409,12 @@ export default function ViewportWarpGallery(props) {
             alive = false
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [srcKey, isRenderer])
+    }, [srcKey])
 
     const layout = useMemo(() => {
-        const cols = Math.max(1, columns)
         const w = width || 1200
-        const inner = Math.max(40, w - padding * 2)
+        const pad = Math.min(padding, Math.max(0, w / 2 - 20))
+        const inner = Math.max(40, w - pad * 2)
         const colW = (inner - gapX * (cols - 1)) / cols
 
         const byRow = new Map<number, any[]>()
@@ -233,7 +427,7 @@ export default function ViewportWarpGallery(props) {
         // from off-frame and leaving completely.
         const lead = Math.round(spaceBefore * vh)
         const tail = Math.round(spaceAfter * vh)
-        let y = padding + lead
+        let y = pad + lead
         const keys = [...byRow.keys()].sort((a, b) => a - b)
         keys.forEach((rk, ri) => {
             const list = byRow.get(rk)!
@@ -246,7 +440,7 @@ export default function ViewportWarpGallery(props) {
                 const ch = cw / aspect
                 cells.push({
                     ...it,
-                    x: padding + it.col * (colW + gapX),
+                    x: pad + it.col * (colW + gapX),
                     y,
                     w: cw,
                     h: ch,
@@ -255,8 +449,8 @@ export default function ViewportWarpGallery(props) {
             })
             y += rowH + (ri < keys.length - 1 ? gapY : 0)
         })
-        return { cells, height: Math.max(1, Math.round(y + padding + tail)) }
-    }, [items, aspects, width, vh, columns, gapX, gapY, padding, imageSize, spaceBefore, spaceAfter])
+        return { cells, height: Math.max(1, Math.round(y + pad + tail)) }
+    }, [items, aspects, width, vh, cols, gapX, gapY, padding, imageSize, spaceBefore, spaceAfter])
 
     const live = useRef({} as any)
     live.current = {
@@ -271,10 +465,9 @@ export default function ViewportWarpGallery(props) {
         restingCurl,
         dispersion,
     }
-
     /* ---------------- WebGL ---------------- */
     useEffect(() => {
-        if (isCanvas || !isRenderer) return
+        if (domOnly) return
         const wrap = wrapRef.current
         const stage = stageRef.current
         const canvas = canvasRef.current
@@ -296,7 +489,10 @@ export default function ViewportWarpGallery(props) {
                 depth: false,
                 premultipliedAlpha: true,
             })
-        if (!gl) return
+        if (!gl) {
+            setGlFailed(true)
+            return
+        }
         const isGL2 =
             typeof WebGL2RenderingContext !== "undefined" &&
             gl instanceof WebGL2RenderingContext
@@ -484,8 +680,17 @@ void main(){
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
 
         let needsDraw = true
+        poke.current = () => {
+            needsDraw = true
+        }
         const texCache = new Map<string, any>()
         const pending = new Set<string>()
+        let texOK = 0
+        let texFail = 0
+        const giveUp = () => {
+            // nothing has decoded and sources are erroring: show plain images
+            if (texOK === 0 && texFail >= 2) setGlFailed(true)
+        }
         function textureFor(s: string) {
             if (!s) return null
             const hit = texCache.get(s)
@@ -496,24 +701,40 @@ void main(){
             img.crossOrigin = "anonymous"
             img.decoding = "async"
             img.onload = () => {
-                const t = gl.createTexture()
-                gl.bindTexture(gl.TEXTURE_2D, t)
-                gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-                if (isGL2) {
-                    gl.generateMipmap(gl.TEXTURE_2D)
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
-                } else {
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+                let t: any = null
+                try {
+                    t = gl.createTexture()
+                    gl.bindTexture(gl.TEXTURE_2D, t)
+                    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img)
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+                    if (isGL2) {
+                        gl.generateMipmap(gl.TEXTURE_2D)
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR)
+                    } else {
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+                    }
+                } catch (err) {
+                    // a cross-origin image without CORS headers taints the
+                    // texture upload and throws here
+                    if (t) gl.deleteTexture(t)
+                    pending.delete(s)
+                    texFail++
+                    giveUp()
+                    return
                 }
                 texCache.set(s, t)
                 pending.delete(s)
+                texOK++
                 needsDraw = true
             }
-            img.onerror = () => pending.delete(s)
+            img.onerror = () => {
+                pending.delete(s)
+                texFail++
+                giveUp()
+            }
             img.src = s
             return null
         }
@@ -724,136 +945,172 @@ void main(){
             if (vao) gl.deleteVertexArray(vao)
             gl.deleteProgram(prog)
         }
-    }, [isCanvas, isRenderer])
+    }, [domOnly])
+
+    /* The loop parks itself when nothing is moving, so it has to be told when
+       the layout changes underneath it — new CMS rows, a resize, new aspects. */
+    useEffect(() => {
+        poke.current()
+    }, [layout, hover, showIndex, textGap])
 
     /* ---------------- render ---------------- */
     labelEls.current.length = layout.cells.length
     const showTitles = hover === "title"
-
-    /* Non-renderer instances collapse to nothing but must stay in the DOM so
-       document order — and therefore gallery order — can be read from them. */
-    if (!isRenderer) {
-        return <div ref={markerRef} style={{ width: "100%", height: 0 }} />
-    }
-
     const empty = items.length === 0
 
+    /* Escapes a padded or max-width parent so the gallery can span the window.
+       A component inside a Collection List can never do this — it is bound to
+       its grid cell — which is why the gallery lives on the page instead. */
+    const bleed: any = fullBleed
+        ? {
+              width: "100vw",
+              maxWidth: "100vw",
+              marginLeft: "calc(50% - 50vw)",
+              marginRight: "calc(50% - 50vw)",
+          }
+        : { width: "100%" }
+
     return (
-        <div ref={markerRef} style={{ width: "100%" }}>
+        <div
+            ref={wrapRef}
+            style={{ ...style, position: "relative", background, ...bleed }}
+        >
             <div
-                ref={wrapRef}
-                style={{ ...style, position: "relative", width: "100%", background }}
+                style={{
+                    position: "relative",
+                    width: "100%",
+                    height: empty ? 320 : layout.height,
+                }}
             >
-                <div
-                    style={{
-                        position: "relative",
-                        width: "100%",
-                        height: empty ? 320 : layout.height,
-                    }}
-                >
-                    {empty ? (
-                        <div
+                {domOnly ? (
+                    layout.cells.map((c, i) => (
+                        <a
+                            key={i}
+                            href={c.link || undefined}
+                            target={c.newTab ? "_blank" : undefined}
+                            rel={c.newTab ? "noopener" : undefined}
                             style={{
                                 position: "absolute",
-                                inset: 0,
-                                display: "grid",
-                                placeContent: "center",
-                                font: '12px ui-monospace, "SF Mono", Menlo, monospace',
-                                color: "#8a8f97",
-                                textAlign: "center",
-                                padding: 24,
-                                lineHeight: 1.6,
+                                left: c.x,
+                                top: c.y,
+                                width: c.w,
+                                height: c.h,
+                                display: "block",
                             }}
                         >
-                            Bind Image and Title to CMS fields, and put this
-                            component inside a Collection List.
-                        </div>
-                    ) : isCanvas ? (
-                        layout.cells.map((c, i) => (
                             <img
-                                key={i}
                                 src={c.src}
                                 alt={c.title}
                                 style={{
-                                    position: "absolute",
-                                    left: c.x,
-                                    top: c.y,
-                                    width: c.w,
-                                    height: c.h,
-                                    objectFit: "cover",
-                                    filter:
-                                        hover === "gray2color" ? "grayscale(1)" : undefined,
-                                }}
-                            />
-                        ))
-                    ) : (
-                        <div
-                            ref={stageRef}
-                            style={{
-                                position: "sticky",
-                                top: 0,
-                                width: "100%",
-                                height: `min(100vh, ${layout.height}px)`,
-                                overflow: "hidden",
-                            }}
-                        >
-                            <canvas
-                                ref={canvasRef}
-                                style={{
-                                    position: "absolute",
-                                    inset: 0,
                                     width: "100%",
                                     height: "100%",
-                                    display: "block",
+                                    objectFit: "cover",
+                                    filter:
+                                        hover === "gray2color"
+                                            ? "grayscale(1)"
+                                            : undefined,
                                 }}
                             />
-                            <div
-                                ref={labelsRef}
-                                style={{
-                                    position: "absolute",
-                                    inset: 0,
-                                    pointerEvents: "none",
-                                    willChange: "transform",
-                                }}
-                            >
-                                {showTitles &&
-                                    layout.cells.map((c, i) => (
-                                        <div
-                                            key={i}
-                                            ref={(el) => { labelEls.current[i] = el }}
-                                            style={{
-                                                position: "absolute",
-                                                left: c.x,
-                                                top: c.y,
-                                                transform: "translateY(-100%)",
-                                                marginTop: -textGap,
-                                                opacity: 0,
-                                                transition: "opacity .28s ease",
-                                                whiteSpace: "nowrap",
-                                                lineHeight: 1.35,
-                                                fontFamily: font,
-                                                fontSize: 11,
-                                                color: textColor,
-                                            }}
-                                        >
-                                            {showIndex && (
-                                                <span
-                                                    style={{
-                                                        display: "block",
-                                                        opacity: 0.55,
-                                                        fontVariantNumeric: "tabular-nums",
-                                                    }}
-                                                >
-                                                    {String(c.index).padStart(2, "0")}
-                                                </span>
-                                            )}
-                                            {c.title}
-                                        </div>
-                                    ))}
-                            </div>
+                        </a>
+                    ))
+                ) : (
+                    /* The stage is always mounted, even with nothing to show
+                       yet. CMS rows arrive an effect late, and if the canvas
+                       were swapped in only once they landed, the WebGL setup
+                       would have already run against a missing element and
+                       would never get a second chance. */
+                    <div
+                        ref={stageRef}
+                        style={{
+                            position: "sticky",
+                            top: 0,
+                            width: "100%",
+                            height: empty
+                                ? 320
+                                : `min(${dvh}, ${layout.height}px)`,
+                            overflow: "hidden",
+                        }}
+                    >
+                        <canvas
+                            ref={canvasRef}
+                            style={{
+                                position: "absolute",
+                                inset: 0,
+                                width: "100%",
+                                height: "100%",
+                                display: "block",
+                            }}
+                        />
+                        <div
+                            ref={labelsRef}
+                            style={{
+                                position: "absolute",
+                                inset: 0,
+                                pointerEvents: "none",
+                                willChange: "transform",
+                            }}
+                        >
+                            {showTitles &&
+                                layout.cells.map((c, i) => (
+                                    <div
+                                        key={i}
+                                        ref={(el) => {
+                                            labelEls.current[i] = el
+                                        }}
+                                        style={{
+                                            position: "absolute",
+                                            left: c.x,
+                                            top: c.y,
+                                            transform: "translateY(-100%)",
+                                            marginTop: -textGap,
+                                            opacity: 0,
+                                            transition: "opacity .28s ease",
+                                            whiteSpace: "nowrap",
+                                            lineHeight: 1.35,
+                                            fontFamily: font,
+                                            fontSize: 11,
+                                            color: textColor,
+                                        }}
+                                    >
+                                        {showIndex && (
+                                            <span
+                                                style={{
+                                                    display: "block",
+                                                    opacity: 0.55,
+                                                    fontVariantNumeric:
+                                                        "tabular-nums",
+                                                }}
+                                            >
+                                                {String(c.index).padStart(2, "0")}
+                                            </span>
+                                        )}
+                                        {c.title}
+                                    </div>
+                                ))}
                         </div>
-                    )}
-                </div>
+                    </div>
+                )}
+
+                {empty && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            inset: 0,
+                            display: "grid",
+                            placeContent: "center",
+                            font: '12px ui-monospace, "SF Mono", Menlo, monospace',
+                            color: "#8a8f97",
+                            textAlign: "center",
+                            padding: 24,
+                            lineHeight: 1.6,
+                            pointerEvents: "none",
+                        }}
+                    >
+                        No items yet. Put a <b>Warp Gallery Item</b> inside your
+                        Collection List and give it the same Gallery ID
+                        (&ldquo;{gallery}&rdquo;).
+                    </div>
+                )}
             </div>
         </div>
     )
@@ -865,136 +1122,76 @@ addPropertyControls(ViewportWarpGallery, {
         title: "Gallery ID",
         defaultValue: "default",
         description:
-            "Use the same ID for CMS items in one gallery. Use a different ID for separate galleries.",
+            "Must match the Gallery ID on the Warp Gallery Items inside your Collection List.",
     },
-    image: {
-        type: ControlType.ResponsiveImage,
-        title: "Image",
-        description:
-            "Click the [+] icon next to the property and choose 'Set Variable' to link a CMS image field.",
-    },
-    title: {
-        type: ControlType.String,
-        title: "Title",
-        defaultValue: "",
-        description:
-            "Click the [+] icon next to the property and choose 'Set Variable' to link a CMS text field.",
-    },
-    link: { type: ControlType.Link, title: "Link" },
-    newTab: { type: ControlType.Boolean, title: "Open in new tab", defaultValue: false },
 
-    columns: {
-        type: ControlType.Number,
-        title: "Columns",
-        min: 1, max: 6, step: 1, displayStepper: true, defaultValue: 3,
-    },
+    columns: { type: ControlType.Number, title: "Columns", defaultValue: 3, min: 1, max: 6, step: 1, displayStepper: true },
+    columnsTablet: { type: ControlType.Number, title: "· Tablet", defaultValue: 0, min: 0, max: 6, step: 1, displayStepper: true, description: "Columns under 1000px. 0 keeps the desktop count." },
+    columnsPhone: { type: ControlType.Number, title: "· Phone", defaultValue: 0, min: 0, max: 6, step: 1, displayStepper: true, description: "Columns under 600px. 0 keeps the desktop count." },
     pattern: {
         type: ControlType.String,
         title: "Pattern",
-        displayTextArea: true,
         defaultValue: "0*0\n**0\n0**",
+        displayTextArea: true,
         description:
-            "One line per row. Use '0' for items and '*' for empty slots. The grid repeats until every item is placed.",
+            "One line per row, one character per column. 0 places an image, * leaves a gap. The pattern repeats until every CMS item is placed.",
     },
-    imageSize: {
-        type: ControlType.Number,
-        title: "Image size",
-        min: 1, max: 4, step: 0.05, defaultValue: 1,
-        description: "In column widths. Images grow into the empty slots beside them.",
+    patternTablet: {
+        type: ControlType.String,
+        title: "· Tablet",
+        defaultValue: "",
+        displayTextArea: true,
+        description: "Pattern used with the tablet column count. Leave empty to fill every column.",
+        hidden: (p) => !(p.columnsTablet > 0),
     },
-    gapX: { type: ControlType.Number, title: "Gap X", min: 0, max: 200, defaultValue: 16 },
-    gapY: { type: ControlType.Number, title: "Gap Y", min: 0, max: 320, defaultValue: 16 },
-    padding: { type: ControlType.Number, title: "Padding", min: 0, max: 200, defaultValue: 40 },
+    patternPhone: {
+        type: ControlType.String,
+        title: "· Phone",
+        defaultValue: "",
+        displayTextArea: true,
+        description: "Pattern used with the phone column count. Leave empty to fill every column.",
+        hidden: (p) => !(p.columnsPhone > 0),
+    },
+    imageSize: { type: ControlType.Number, title: "Image Size", defaultValue: 1, min: 0.2, max: 3, step: 0.05 },
+    gapX: { type: ControlType.Number, title: "Gap X", defaultValue: 16, min: 0, max: 200, step: 1 },
+    gapY: { type: ControlType.Number, title: "Gap Y", defaultValue: 16, min: 0, max: 400, step: 1 },
+    padding: { type: ControlType.Number, title: "Padding", defaultValue: 40, min: 0, max: 300, step: 1 },
+    fullBleed: {
+        type: ControlType.Boolean,
+        title: "Full Bleed",
+        defaultValue: false,
+        description:
+            "Span the whole window, ignoring the padding or max width of the section it sits in.",
+    },
     background: { type: ControlType.Color, title: "Background", defaultValue: "transparent" },
-    spaceBefore: {
-        type: ControlType.Number,
-        title: "Space before",
-        min: 0, max: 2, step: 0.1, defaultValue: 0,
-        description: "Clear screens before the first row, in viewport heights.",
-    },
-    spaceAfter: {
-        type: ControlType.Number,
-        title: "Space after",
-        min: 0, max: 2, step: 0.1, defaultValue: 0,
-        description: "Clear screens after the last row, in viewport heights.",
-    },
+    spaceBefore: { type: ControlType.Number, title: "Space Before", defaultValue: 0, min: 0, max: 3, step: 0.1, description: "Empty screens before the first row, in viewport heights." },
+    spaceAfter: { type: ControlType.Number, title: "Space After", defaultValue: 0, min: 0, max: 3, step: 0.1 },
 
     hover: {
         type: ControlType.Enum,
-        title: "Hover Effect",
-        options: ["gray2color", "color2gray", "title", "none"],
-        optionTitles: ["Grayscale to Color", "Color to Grayscale", "Title Appear", "None"],
+        title: "Hover",
         defaultValue: "title",
+        options: ["title", "gray2color", "color2gray", "none"],
+        optionTitles: ["Title Appear", "Grayscale to Color", "Color to Grayscale", "None"],
     },
-    font: {
-        type: ControlType.String, title: "Font",
-        defaultValue: 'ui-monospace, "SF Mono", Menlo, monospace',
-        hidden: (p) => p.hover !== "title",
-    },
-    textColor: {
-        type: ControlType.Color, title: "Text color", defaultValue: "#8a8f97",
-        hidden: (p) => p.hover !== "title",
-    },
-    showIndex: {
-        type: ControlType.Boolean, title: "Index", defaultValue: true,
-        hidden: (p) => p.hover !== "title",
-    },
-    textGap: {
-        type: ControlType.Number, title: "Text gap", min: 0, max: 48, defaultValue: 10,
-        hidden: (p) => p.hover !== "title",
-    },
+    font: { type: ControlType.String, title: "Font", defaultValue: 'ui-monospace, "SF Mono", Menlo, monospace' },
+    textColor: { type: ControlType.Color, title: "Text Color", defaultValue: "#8a8f97" },
+    showIndex: { type: ControlType.Boolean, title: "Show Index", defaultValue: true },
+    textGap: { type: ControlType.Number, title: "Text Gap", defaultValue: 10, min: 0, max: 80, step: 1 },
 
-    warpOn: { type: ControlType.Boolean, title: "Warp Effect", defaultValue: true },
-    edgeBand: {
-        type: ControlType.Number,
-        title: "Edge band",
-        min: 0.05, max: 0.5, step: 0.01, defaultValue: 0.15,
-        hidden: (p) => !p.warpOn,
-        description:
-            "How far in from the top and bottom the curl reaches. Everything between stays flat.",
-    },
-    edgeAngle: {
-        type: ControlType.Number,
-        title: "Angle",
-        min: 0, max: 1, step: 0.01, defaultValue: 0.7,
-        hidden: (p) => !p.warpOn,
-        description: "How far the surface rolls at the lip; 1 is a full quarter turn. This model is near-identity below about 30 degrees, so low values do almost nothing.",
-    },
+    warpOn: { type: ControlType.Boolean, title: "Warp", defaultValue: true },
+    edgeBand: { type: ControlType.Number, title: "Edge Band", defaultValue: 0.15, min: 0.02, max: 0.5, step: 0.01, hidden: (p) => !p.warpOn, description: "How far into the screen the curl reaches, as a fraction of the viewport." },
+    edgeAngle: { type: ControlType.Number, title: "Angle", defaultValue: 0.7, min: 0.1, max: 1, step: 0.02, hidden: (p) => !p.warpOn, description: "How far the surface rolls away at the lip." },
     edgeScale: {
         type: ControlType.Enum,
-        title: "At the lip",
-        options: ["shrink", "grow"],
-        optionTitles: ["Shrink", "Grow"],
+        title: "At Edge",
         defaultValue: "shrink",
-        hidden: (p) => !p.warpOn,
-        description:
-            "Shrink: tiles are smallest at the edge and open up as they reach the middle. Grow: the reverse.",
-    },
-    restingCurl: {
-        type: ControlType.Number,
-        title: "Resting curl",
-        min: 0, max: 0.5, step: 0.01, defaultValue: 0.02,
-        hidden: (p) => !p.warpOn,
-        description: "Curl that remains when the scroll stops. Set to 0 for velocity only.",
-    },
-    scrollSpeed: {
-        type: ControlType.Number,
-        title: "Scroll speed",
-        min: 0.03, max: 0.4, step: 0.005, defaultValue: 0.11,
+        options: ["shrink", "grow"],
+        optionTitles: ["Scale Down", "Scale Up"],
         hidden: (p) => !p.warpOn,
     },
-    dispersion: {
-        type: ControlType.Number,
-        title: "Dispersion",
-        min: 0, max: 0.6, step: 0.005, defaultValue: 0.12,
-        hidden: (p) => !p.warpOn,
-        description:
-            "Prismatic spread on the rolled edges. Eight samples across the smear each take a wavelength, so it resolves into a spectrum. Push past 0.3 for a heavy prism.",
-    },
-    intensity: {
-        type: ControlType.Number,
-        title: "Intensity",
-        min: 0, max: 3, step: 0.05, defaultValue: 1.3,
-        hidden: (p) => !p.warpOn,
-    },
+    restingCurl: { type: ControlType.Number, title: "Resting Curl", defaultValue: 0.02, min: 0, max: 0.3, step: 0.005, hidden: (p) => !p.warpOn, description: "Curl left in place when the page is still." },
+    dispersion: { type: ControlType.Number, title: "Dispersion", defaultValue: 0.12, min: 0, max: 0.6, step: 0.005, hidden: (p) => !p.warpOn, description: "Splits the warped edge into a spectrum." },
+    scrollSpeed: { type: ControlType.Number, title: "Scroll Speed", defaultValue: 0.11, min: 0.02, max: 0.6, step: 0.01, description: "Lower lags further behind the page, which drives a stronger warp." },
+    intensity: { type: ControlType.Number, title: "Intensity", defaultValue: 1.3, min: 0.1, max: 3, step: 0.05, hidden: (p) => !p.warpOn },
 })

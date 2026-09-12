@@ -8,31 +8,65 @@ bottom lips of the viewport, and the images come from a CMS Collection.
 | | WarpGallery | ViewportWarpGallery |
 |---|---|---|
 | Warp | whole viewport curves, middle pinched | middle band is pristine, only the lips distort |
-| Content | rows authored by hand | one CMS item per instance, grouped by Gallery ID |
+| Content | rows authored by hand | one CMS item per row, grouped by Gallery ID |
 | Link | one per row | one per item, bindable to a CMS field |
 
 ## Setting it up
 
+The file exports **two** components. Both appear in Assets once you paste it in.
+
+| Component | Where it goes |
+|---|---|
+| **Warp Gallery Item** | inside the Collection List |
+| **Viewport Warp Gallery** | on the page, **outside** the list |
+
 1. Add a **Collection List** bound to your collection.
-2. Put **one** ViewportWarpGallery inside the list's cell.
-3. Bind **Image**, **Title** and **Link** to CMS fields — click the `+` next to
-   each property and choose *Set Variable*.
-4. Leave **Gallery ID** as `default`, or give separate galleries separate IDs.
-5. Set the layout on the instance: **Columns**, **Pattern**, gaps, padding.
+2. Put **one Warp Gallery Item** inside the list's cell. Bind **Image**,
+   **Title** and **Link** to CMS fields — click the `+` next to each property
+   and choose *Set Variable*. It draws nothing on the live page; on the canvas
+   it shows a small chip so you can still select it.
+3. Drop **one Viewport Warp Gallery** on the page, outside the list, and set
+   its width to **Fill**.
+4. Give both the same **Gallery ID**. Separate galleries get separate IDs.
+5. Set the layout on the gallery: **Columns**, **Pattern**, gaps, padding.
 
-Every instance sharing a Gallery ID registers into one shared list. The first
-instance in document order draws the whole gallery; the rest collapse to zero
-height, so the list contributes no extra space. Order follows the Collection
-List's own order, so sorting and filtering in Framer carry through.
+### Why two components
 
-**Pattern** is one line per row, and the grid repeats until every item is
-placed:
+A component inside a Collection List is trapped in one grid cell. It can only
+ever be as wide as that cell, so a gallery placed inside the list can never go
+full width no matter what its own width is set to. The item reports its CMS row;
+the gallery, which lives on the page, draws them all.
+
+If the gallery still does not span the window because the section around it has
+padding or a max width, turn on **Full Bleed**.
+
+**Pattern** is one line per row, one character per column, and the grid repeats
+until every item is placed:
 
 ```
 0*0
 **0
 0**
 ```
+
+A pattern is written against a specific column count — `0*0` means nothing at
+two columns — so **Tablet** and **Phone** carry their own column count and their
+own pattern. Leave a breakpoint pattern empty to simply fill every column.
+
+### Picking the right items
+
+Framer keeps a copy of the page in the DOM for every breakpoint: hidden ones on
+a published site, side-by-side frames on the canvas. A registry keyed only by
+Gallery ID would therefore collect each CMS row once per breakpoint and show
+everything two or three times over. The gallery instead keeps only the rows
+whose nearest shared ancestor with itself is closest, which picks the single
+copy that belongs to it in both cases.
+
+### If WebGL cannot run
+
+If the browser gives no WebGL context, or the images come from a host that
+sends no CORS headers (the GPU is not allowed to read those), the gallery falls
+back to a plain grid of linked images — no warp, but never a blank page.
 
 ## The warp
 
@@ -93,6 +127,10 @@ actually inside the warp band pay for them.
 
 ## Dials
 
+- **Columns** / **Tablet** / **Phone** — column count, with optional overrides
+  under 1000px and 600px. `0` on a breakpoint keeps the desktop count.
+- **Full Bleed** — span the window, ignoring the padding or max width of the
+  section the gallery sits in.
 - **Edge band** (0.15) — how far in from each lip the warp reaches. Everything
   between stays flat. Larger values distort more of the screen.
 - **Intensity** (1.3) — how hard a given scroll speed warps.
