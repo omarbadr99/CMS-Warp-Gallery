@@ -970,6 +970,9 @@ void main(){
     const showTitles = hover === "title"
     const empty = items.length === 0
     const elsewhere = empty ? otherGalleries(gallery) : []
+    // entries under this gallery's own ID, before any filtering — separates
+    // "nothing was ever placed" from "placed, but not on screen"
+    const mineRaw = empty ? storeFor(gallery).entries.size : 0
 
     /* Escapes a padded or max-width parent so the gallery can span the window.
        A component inside a Collection List can never do this — it is bound to
@@ -1119,7 +1122,14 @@ void main(){
                             pointerEvents: "none",
                         }}
                     >
-                        {elsewhere.length > 0 ? (
+                        {mineRaw > 0 ? (
+                            <>
+                                {mineRaw} item{mineRaw === 1 ? "" : "s"} registered
+                                under &ldquo;{gallery}&rdquo;, but none are on
+                                screen. The Collection List holding them is
+                                hidden or has not rendered yet.
+                            </>
+                        ) : elsewhere.length > 0 ? (
                             <>
                                 Nothing under Gallery ID &ldquo;{gallery}&rdquo;.
                                 {" "}
