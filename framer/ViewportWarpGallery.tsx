@@ -105,6 +105,18 @@ function ordered(st: Store, host: HTMLElement | null): Entry[] {
     return list
 }
 
+/** What is registered elsewhere, so an empty gallery can say why it is empty
+ *  instead of only that it is. */
+function otherGalleries(mine: string): { id: string; count: number }[] {
+    const out: { id: string; count: number }[] = []
+    registries.forEach((st, id) => {
+        if (id === mine) return
+        const n = [...st.entries.values()].filter((e) => e.el?.isConnected).length
+        if (n > 0) out.push({ id, count: n })
+    })
+    return out
+}
+
 function sameList(a: Entry[], b: Entry[]): boolean {
     if (a.length !== b.length) return false
     for (let i = 0; i < a.length; i++) {
@@ -957,6 +969,7 @@ void main(){
     labelEls.current.length = layout.cells.length
     const showTitles = hover === "title"
     const empty = items.length === 0
+    const elsewhere = empty ? otherGalleries(gallery) : []
 
     /* Escapes a padded or max-width parent so the gallery can span the window.
        A component inside a Collection List can never do this — it is bound to
@@ -1106,9 +1119,27 @@ void main(){
                             pointerEvents: "none",
                         }}
                     >
-                        No items yet. Put a <b>Warp Gallery Item</b> inside your
-                        Collection List and give it the same Gallery ID
-                        (&ldquo;{gallery}&rdquo;).
+                        {elsewhere.length > 0 ? (
+                            <>
+                                Nothing under Gallery ID &ldquo;{gallery}&rdquo;.
+                                {" "}
+                                {elsewhere[0].count} item
+                                {elsewhere[0].count === 1 ? " is" : "s are"}{" "}
+                                registered under &ldquo;{elsewhere[0].id}&rdquo;
+                                {" "}&mdash; make the two IDs match.
+                            </>
+                        ) : (
+                            <>
+                                No items yet. Put a <b>Warp Gallery Item</b>{" "}
+                                inside your Collection List and give it the
+                                Gallery ID &ldquo;{gallery}&rdquo;.
+                            </>
+                        )}
+                        <br />
+                        <span style={{ opacity: 0.7 }}>
+                            This gallery must sit <b>outside</b> the Collection
+                            List, not inside it.
+                        </span>
                     </div>
                 )}
             </div>
