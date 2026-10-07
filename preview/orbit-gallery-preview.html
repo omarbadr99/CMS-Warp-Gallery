@@ -694,20 +694,20 @@ const PRESET = () => ({
   /* Size and gap are fractions of the FRAME HEIGHT, because that is the axis
      the strip runs along: a tile's height is really the angle it subtends, and
      once that passes the horizon the tile swallows the screen. */
-  tileHeight: 0.24,       // tile height as a fraction of the stage height
+  tileHeight: 0.18,       // tile height as a fraction of the stage height
   tileAspect: 1.35,       // w / h of the tile box; images cover-crop into it
-  gap:        0.05,       // gap between tiles, also in stage heights
+  gap:        0.015,       // gap between tiles, also in stage heights
   leadIn:     1.0,        // clear viewports before the first tile
   leadOut:    1.0,        // clear viewports after the last
 
-  depth:      0.27,       // sphere radius as a fraction of stage height
+  depth:      0.34,       // sphere radius as a fraction of stage height
   cullAngle:  78,         // degrees; past this a tile is behind the eye
 
   snap:       "mandatory",   // mandatory | proximity | off
 
   dispersion: 0.045,      // prismatic split at the top and bottom lips
   aberration: 0.007,      // extra split while the scroll is moving
-  scrollSpeed: 0.14,      // smoothing — lower trails further behind the snap
+  scrollSpeed: 1.0,       // 1 tracks the snap exactly; lower trails behind it
 
   font:       "mono",
   color:      "#8a8f97",
@@ -1186,21 +1186,29 @@ const WARP_BODY = `
 const FRAG_BODY = `
   vec2 lo = uUv.zw;
   vec2 hi = uUv.zw + uUv.xy;
-  vec4 c = SAMPLE(uTex, clamp(vUv, lo, hi));
+
+  vec4 c = FETCH(clamp(vUv, lo, hi));
 
   /* Dispersion rides the bleed: it is nothing at rest in the middle and
      strongest where the stretch is, which is the top and bottom lips. The
      scroll term adds a flat split across everything while the snap is still
      travelling, so a flick smears and the landing clears it. */
+  /* uDispOn is a uniform, so this branch is the same for every fragment in the
+     draw and the texture fetches inside it keep well-defined derivatives. The
+     earlier version tested the per-fragment amount instead; that is non-uniform
+     control flow, the implicit mip level becomes undefined along the contour
+     where it flips, and the result was a pair of seams across the tile.
+     The CPU decides per tile whether any of it disperses at all, which also
+     lets the tile resting in the middle skip the loop outright. */
   float amount = vEdge * vEdge * uDisp + uAberr;
-  if (amount > 0.0004) {
+  if (uDispOn > 0.5) {
     vec2 off = vec2((vQuad.x - 0.5) * 0.7, 1.0) * amount;
     vec3 sum = vec3(0.0);
     vec3 wsum = vec3(0.0);
     for (int i = 0; i < 8; i++) {
       float t = float(i) / 7.0;
       vec3 w = spectrum(t);
-      sum += SAMPLE(uTex, clamp(vUv + off * (t - 0.5) * 2.0, lo, hi)).rgb * w;
+      sum += FETCH(clamp(vUv + off * (t - 0.5) * 2.0, lo, hi)).rgb * w;
       wsum += w;
     }
     c.rgb = sum / max(wsum, vec3(1e-4));
@@ -1229,9 +1237,9 @@ const FRAG = `#version 300 es
 precision highp float;
 in vec2 vUv; in vec2 vQuad; in float vEdge;
 uniform sampler2D uTex; uniform vec4 uUv;
-uniform float uGray; uniform float uDisp; uniform float uAberr;
+uniform float uGray; uniform float uDisp; uniform float uAberr; uniform float uDispOn;
 out vec4 frag;
-#define SAMPLE texture
+#define FETCH(uv) texture(uTex, uv)
 ${SPECTRUM}
 void main() {${FRAG_BODY}
   /* The magnification at the lips is huge, so the quad's own border has to be
@@ -1254,8 +1262,8 @@ const FRAG_1 = `
 precision highp float;
 varying vec2 vUv; varying vec2 vQuad; varying float vEdge;
 uniform sampler2D uTex; uniform vec4 uUv;
-uniform float uGray; uniform float uDisp; uniform float uAberr;
-#define SAMPLE texture2D
+uniform float uGray; uniform float uDisp; uniform float uAberr; uniform float uDispOn;
+#define FETCH(uv) texture2D(uTex, uv)
 ${SPECTRUM}
 void main() {${FRAG_BODY}
   vec2 dd = min(vQuad, 1.0 - vQuad);
@@ -1308,7 +1316,7 @@ function initGL() {
   if (!prog) { stage.dataset.nogl = "1"; return false; }
 
   gl.useProgram(prog);
-  ["uRect", "uRes", "uUv", "uR", "uCull", "uTex", "uGray", "uDisp", "uAberr"]
+  ["uRect", "uRes", "uUv", "uR", "uCull", "uTex", "uGray", "uDisp", "uAberr", "uDispOn"]
     .forEach(n => { uni[n] = gl.getUniformLocation(prog, n); });
   gl.uniform1i(uni.uTex, 0);
 
@@ -1477,10 +1485,14 @@ function frame(now) {
   dt = Math.min(dt, 1 / 20);
   const step = dt * 60;                 // NOT clamped: 30fps must advance twice as far
 
-  /* The browser's snap sets the target; this trails behind it. The lag is
-     what the aberration reads, so a snap landing smears and then clears. */
+  /* The browser's snap animation is already an eased curve. Damping the render
+     on top of it composes two curves, and the result stops being a single
+     rise-and-fall — it wobbles two or three times inside one gesture, which
+     reads as drifting through a bend rather than landing. At 1 the geometry
+     tracks the snap exactly and the velocity is the browser's own curve; lower
+     values deliberately trail for a softer, smearier feel. */
   const target = scroller.scrollTop;
-  if (!cfg.warp) {
+  if (!cfg.warp || cfg.scrollSpeed >= 0.999) {
     renderScroll = target;
   } else {
     const damp = 1 - Math.pow(1 - cfg.scrollSpeed, step);
@@ -1551,9 +1563,17 @@ function frame(now) {
   gl.uniform1f(uni.uAberr, cfg.warp ? motion * cfg.aberration : 0);
   gl.activeTexture(gl.TEXTURE0);
 
+  const thetaEdge = Math.max(Math.atan((stageH / 2) / R), 1e-3);
+  const disp = cfg.warp ? cfg.dispersion : 0;
+  const aberr = cfg.warp ? motion * cfg.aberration : 0;
+
   for (const v of vis) {
     const c = layout.cells[v.i];
     if (!c.img.tex) upload(c.img);
+    // the furthest this tile reaches from the middle decides whether it splits
+    const e0 = Math.abs(c.y - origin) / R, e1 = Math.abs(c.y + c.h - origin) / R;
+    const maxEdge = Math.max(e0, e1) / thetaEdge;
+    gl.uniform1f(uni.uDispOn, maxEdge * maxEdge * disp + aberr > 0.0006 ? 1 : 0);
     const want = v.i === hovered ? hg : bg;
     c.gray += (want - c.gray) * Math.min(1, step * 0.16);
     if (Math.abs(want - c.gray) < 0.002) c.gray = want;
@@ -1706,10 +1726,10 @@ function rebuildRail() {
       v => v.toFixed(2), () => { paintEdgeCap(); })));
     b.appendChild(ctlRow("Horizon", rangeCtl("cullAngle", 60, 88, 1,
       v => v.toFixed(0) + "°", null)));
-    b.appendChild(ctlRow("Scroll speed", rangeCtl("scrollSpeed", 0.03, 0.6, 0.01,
-      v => v.toFixed(2), null)));
+    b.appendChild(ctlRow("Trail", rangeCtl("scrollSpeed", 0.05, 1.0, 0.05,
+      v => v >= 0.999 ? "none" : v.toFixed(2), null)));
     b.appendChild(el("p", "hint",
-      "Depth is the sphere's radius as a fraction of the frame height. Smaller is a tighter sphere, so the lips run away harder."));
+      "Depth is the sphere's radius as a fraction of the frame height. Smaller is a tighter sphere, so the lips run away harder. Trail at \u201cnone\u201d lands exactly with the snap; lower it to let the geometry lag behind and smear."));
   }));
 
   rail.appendChild(group("Dispersion", (b) => {
